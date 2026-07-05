@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.grok/
+artifacts/
+coverage/
+dist/
+.debug-token.local
+.auth-encryption-key.local
+npm-debug.log*

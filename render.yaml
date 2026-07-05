@@ -1,0 +1,77 @@
+services:
+  - type: web
+    name: feishu-grok-bridge
+    runtime: node
+    plan: starter
+    buildCommand: export GROK_BIN_DIR="$PWD/.grok/bin" && curl -fsSL https://x.ai/cli/install.sh | bash && npm ci
+    startCommand: export GROK_BIN_DIR="$PWD/.grok/bin" && node scripts/restore-grok-auth.mjs && node scripts/ensure-grok-cli.mjs && export PATH="$GROK_BIN_DIR:$PATH" && npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: SERVICE_NAME
+        value: feishu-grok-bridge
+      - key: GROK_CLI_ENABLED
+        value: "true"
+      - key: GROK_CLI_TIMEOUT_MS
+        value: "540000"
+      - key: GROK_CLI_COMMAND
+        value: /opt/render/project/src/.grok/bin/grok
+      - key: GROK_CLI_CWD
+        value: /tmp/grok-feishu-bridge-cwd
+      - key: GROK_MEDIA_MAX_TURNS
+        value: "10"
+      - key: GROK_VIDEO_MAX_TURNS
+        value: "10"
+      - key: GROK_VIDEO_MODEL
+        value: grok-build
+      - key: GROK_MEMORY_ENABLED
+        value: "true"
+      - key: GROK_STATE_SYNC_ENABLED
+        value: "true"
+      - key: GROK_AUTH_SYNC_ENABLED
+        value: "true"
+      - key: GROK_AUTH_REDIS_KEY
+        value: feishu-grok-bridge:grok-auth
+      - key: GROK_STATE_REDIS_KEY
+        value: feishu-grok-bridge:grok-state
+      - key: GROK_REMOTE_STATE_SSH_PORT
+        value: "22"
+      - key: GROK_REMOTE_STATE_SSH_USER
+        value: root
+      - key: GROK_REMOTE_STATE_DIR
+        value: /opt/grok-state-backups/feishu-grok-bridge
+      - key: GROK_CLI_ARGS_JSON
+        value: '["--no-auto-update","--always-approve","--permission-mode","bypassPermissions","--max-turns","10","--cwd","{{cwd}}","--output-format","streaming-json","-p","{{prompt}}"]'
+      - key: MAX_CARD_CONTENT_CHARS
+        value: "90000"
+      - key: MAX_REPLY_CHARS
+        value: "3500"
+      - key: MAX_IMAGE_BYTES
+        value: "10485760"
+      - key: MAX_VIDEO_BYTES
+        value: "31457280"
+      - key: FEISHU_APP_ID
+        sync: false
+      - key: FEISHU_APP_SECRET
+        sync: false
+      - key: FEISHU_VERIFICATION_TOKEN
+        sync: false
+      - key: FEISHU_ENCRYPT_KEY
+        sync: false
+      - key: GROK_DEPLOYMENT_KEY
+        sync: false
+      - key: GROK_AUTH_JSON_B64
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: AUTH_ENCRYPTION_KEY
+        sync: false
+      - key: GROK_REMOTE_STATE_SSH_HOST
+        sync: false
+      - key: GROK_REMOTE_STATE_SSH_PASSWORD
+        sync: false
+      - key: DEBUG_TOKEN
+        sync: false
