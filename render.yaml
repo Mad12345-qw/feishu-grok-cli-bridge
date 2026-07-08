@@ -19,6 +19,10 @@ services:
         value: gpt-5.5
       - key: GPT55_WEB_SEARCH_ENABLED
         value: "true"
+      - key: FEISHU_CARD_HEADER_TEMPLATE
+        value: default
+      - key: FEISHU_CARD_BANNER_IMAGE_KEY
+        sync: false
       - key: GROK_CLI_ENABLED
         value: "false"
       - key: GROK_CLI_TIMEOUT_MS

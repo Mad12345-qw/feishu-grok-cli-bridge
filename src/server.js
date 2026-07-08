@@ -48,7 +48,7 @@ const CARD_TEXT_TAG_COLORS = new Set([
   "grey"
 ]);
 const DEFAULT_SYSTEM_PROMPT = [
-  "You are Grok connected to a Feishu bot.",
+  "You are GPT5.5 connected to a Feishu bot.",
   "Reply in the user's language.",
   "When the user asks for latest, current, prices, news, or web facts, use web search if available.",
   "Be direct, include dates for time-sensitive facts, and do not invent sources.",
@@ -656,7 +656,8 @@ function sourceButtonsV2(text = "") {
 }
 
 function grokHeaderTemplate(template = "") {
-  return CARD_HEADER_TEMPLATES.has(template) ? template : "grey";
+  const configured = template || process.env.FEISHU_CARD_HEADER_TEMPLATE || "grey";
+  return CARD_HEADER_TEMPLATES.has(configured) ? configured : "grey";
 }
 
 function grokModeLabel(title = "", { webSearch = false } = {}) {
@@ -670,7 +671,7 @@ function grokModeLabel(title = "", { webSearch = false } = {}) {
 
 function grokCardSubtitle({ webSearch = false, media = false, streaming = false } = {}) {
   return [
-    "Grok CLI",
+    "GPT5.5 Responses",
     media ? "媒体结果卡片" : webSearch ? "联网检索" : "原生卡片",
     streaming ? "流式更新" : "完成"
   ].join(" · ");
@@ -692,7 +693,7 @@ function grokHeaderTags(title = "", { webSearch = false, streaming = false, done
   const mode = grokModeLabel(title, { webSearch });
   const effectiveModeColor = CARD_TEXT_TAG_COLORS.has(modeTagColor)
     ? modeTagColor
-    : mode === "联网搜索" ? "indigo" : "orange";
+    : mode === "联网搜索" ? "indigo" : "grey";
   const tags = [
     grokTextTag("mode_tag", mode, effectiveModeColor)
   ];
@@ -705,18 +706,40 @@ function grokHeaderTags(title = "", { webSearch = false, streaming = false, done
 }
 
 function grokStatusMarkdown(status = "") {
-  return `**● 状态**  ${cardMarkdown(status, 260)}`;
+  return `**状态**  ${cardMarkdown(status, 260)}`;
 }
 
 function grokFooterNote({ webSearch = false } = {}) {
   return {
     tag: "markdown",
-    element_id: "grok_footer",
-    content: webSearch ? "X1 · Grok Bridge · 联网检索" : "X1 · Grok Bridge"
+    element_id: "gpt_footer",
+    content: webSearch ? "GPT5.5 Research Bridge · 联网检索" : "GPT5.5 Research Bridge"
   };
 }
 
-function buildStreamingCard(text = "", title = "Grok 回复", { webSearch = false, status = "Grok CLI 已接管任务", headerTemplate = "", modeTagColor = "" } = {}) {
+function gptBannerImageElement() {
+  const imageKey = String(process.env.FEISHU_CARD_BANNER_IMAGE_KEY || "").trim();
+  if (!imageKey) return null;
+  return {
+    tag: "img",
+    img_key: imageKey,
+    alt: {
+      tag: "plain_text",
+      content: "GPT5.5 Research Bridge banner"
+    },
+    mode: "crop_center",
+    preview: false,
+    scale_type: "crop_center",
+    size: "stretch_without_padding"
+  };
+}
+
+function cardBodyElementsWithBanner(elements = []) {
+  const banner = gptBannerImageElement();
+  return banner ? [banner, ...elements] : elements;
+}
+
+function buildStreamingCard(text = "", title = "GPT 回答", { webSearch = false, status = "GPT5.5 已接管任务", headerTemplate = "", modeTagColor = "" } = {}) {
   const media = /视频|媒体|图片|图像|照片|video|image|photo|picture/i.test(`${title}`);
   return {
     schema: "2.0",
@@ -726,7 +749,7 @@ function buildStreamingCard(text = "", title = "Grok 回复", { webSearch = fals
       enable_forward: false,
       width_mode: "fill",
       summary: {
-        content: "[生成中...] Grok CLI"
+        content: "[生成中...] GPT5.5"
       },
       streaming_config: {
         print_frequency_ms: { default: 45, android: 45, ios: 45, pc: 45 },
@@ -750,7 +773,7 @@ function buildStreamingCard(text = "", title = "Grok 回复", { webSearch = fals
       direction: "vertical",
       padding: "14px 16px 16px 16px",
       vertical_spacing: "10px",
-      elements: [
+      elements: cardBodyElementsWithBanner([
         {
           tag: "markdown",
           element_id: STREAM_STATUS_ELEMENT_ID,
@@ -765,12 +788,12 @@ function buildStreamingCard(text = "", title = "Grok 回复", { webSearch = fals
           content: ` ${cardMarkdown(text || "", config.maxCardContentChars - 1)}`
         },
         grokFooterNote({ webSearch })
-      ]
+      ])
     }
   };
 }
 
-function buildFinalCard(text = "", title = "Grok 回复", { webSearch = false, headerTemplate = "", modeTagColor = "" } = {}) {
+function buildFinalCard(text = "", title = "GPT 回答", { webSearch = false, headerTemplate = "", modeTagColor = "" } = {}) {
   const safe = sanitizeFeishuText(text);
   const media = /视频|媒体|图片|图像|照片|video|image|photo|picture/i.test(`${title}\n${safe}`);
   const elements = [
@@ -809,12 +832,12 @@ function buildFinalCard(text = "", title = "Grok 回复", { webSearch = false, h
       direction: "vertical",
       padding: "16px 18px 18px 18px",
       vertical_spacing: "10px",
-      elements
+      elements: cardBodyElementsWithBanner(elements)
     }
   };
 }
 
-function buildFeishuCard(text = "", title = "Grok 回复", { webSearch = false, part = 1, total = 1, headerTemplate = "" } = {}) {
+function buildFeishuCard(text = "", title = "GPT 回答", { webSearch = false, part = 1, total = 1, headerTemplate = "" } = {}) {
   const safe = sanitizeFeishuText(text);
   const elements = [
     {
@@ -831,7 +854,7 @@ function buildFeishuCard(text = "", title = "Grok 回复", { webSearch = false, 
       {
         tag: "plain_text",
         content: [
-          webSearch ? "Grok CLI · 联网检索" : "Grok CLI",
+          webSearch ? "GPT5.5 · 联网检索" : "GPT5.5",
           total > 1 ? `第 ${part}/${total} 段` : "飞书卡片富文本"
         ].join(" · ")
       }
@@ -857,7 +880,6 @@ function buildFeishuCard(text = "", title = "Grok 回复", { webSearch = false, 
     elements
   };
 }
-
 function plainMarkdownLine(line = "") {
   return String(line || "")
     .replace(/^#{1,6}\s+/, "")
@@ -947,7 +969,7 @@ function markdownLineToPostNodes(line = "", inCodeBlock = false) {
   return nodes.length ? nodes : [{ tag: "text", text: plainMarkdownLine(raw) || " " }];
 }
 
-function buildFeishuPostContent(text = "", title = "Grok 回复") {
+function buildFeishuPostContent(text = "", title = "GPT 回答") {
   const safe = sanitizeFeishuText(text);
   const lines = safe.split("\n");
   const content = [];
@@ -1285,7 +1307,7 @@ function classifyTask(text = "") {
     return {
       kind: "video",
       maxTurns: config.videoMaxTurns,
-      title: "Grok 视频生成",
+      title: "GPT 视频任务",
       webSearch: false,
       mediaTask: true,
       prompt: media.prompt,
@@ -1298,7 +1320,7 @@ function classifyTask(text = "") {
     return {
       kind: "image",
       maxTurns: config.mediaMaxTurns,
-      title: "Grok 图片生成",
+      title: "GPT 图片任务",
       webSearch: false,
       mediaTask: true,
       prompt: media.prompt,
@@ -1312,7 +1334,7 @@ function classifyTask(text = "") {
     return {
       kind: deep ? "research" : "quick_search",
       maxTurns: deep ? 18 : 10,
-      title: "Grok 联网检索",
+      title: "GPT 联网检索",
       webSearch: true,
       mediaTask: false,
       rules: [WEB_SOURCE_LINK_RULE]
@@ -1322,7 +1344,7 @@ function classifyTask(text = "") {
     return {
       kind: "quick_fact",
       maxTurns: 6,
-      title: "Grok 回复",
+      title: "GPT 回答",
       webSearch: false,
       mediaTask: false,
       rules: []
@@ -1331,7 +1353,7 @@ function classifyTask(text = "") {
   return {
     kind: "chat",
     maxTurns: 8,
-    title: "Grok 回复",
+    title: "GPT 回答",
     webSearch: false,
     mediaTask: false,
     rules: []
@@ -1994,7 +2016,7 @@ function createCardKitStreamingUpdater({ feishu, cardId, title, webSearch }) {
       await enqueue(() => feishu.updateCardSettings(cardId, {
         config: {
           streaming_mode: false,
-          summary: { content: "Grok CLI 运行失败" }
+          summary: { content: "GPT5.5 运行失败" }
         }
       }, nextSequence()));
       await queue;
@@ -2318,7 +2340,7 @@ class FeishuClient {
     return lastResponse;
   }
 
-  async replyPost(messageId, text, title = "Grok 回复") {
+  async replyPost(messageId, text, title = "GPT 回答") {
     if (!messageId) return;
     let lastResponse = null;
     for (const chunk of splitReply(sanitizeFeishuText(text), config.maxReplyChars)) {
@@ -2331,7 +2353,7 @@ class FeishuClient {
     return lastResponse;
   }
 
-  async replyRich(messageId, text, title = "Grok 回复") {
+  async replyRich(messageId, text, title = "GPT 回答") {
     if (!messageId) return;
     const chunks = splitForCard(text);
     let lastResponse = null;
@@ -2372,7 +2394,7 @@ class FeishuClient {
     return response;
   }
 
-  async replyStreamingCard(messageId, initialText, title = "Grok 回复", options = {}) {
+  async replyStreamingCard(messageId, initialText, title = "GPT 回答", options = {}) {
     const cardId = await this.createCardEntity(buildStreamingCard(initialText, title, options));
     const response = await this.replyCardEntity(messageId, cardId);
     return { cardId, response };
@@ -2415,7 +2437,7 @@ class FeishuClient {
     });
   }
 
-  async patchCard(messageId, text, title = "Grok 回复", options = {}) {
+  async patchCard(messageId, text, title = "GPT 回答", options = {}) {
     if (!messageId) return;
     return this.post(`/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`, {
       content: JSON.stringify(buildFeishuCard(text, title, options))
@@ -3175,7 +3197,7 @@ async function processFeishuMessage(payload) {
       await syncGrokStateIfChanged("control-new-session").catch((error) => {
         console.warn(`Grok state Redis sync failed after control command: ${error.message}`);
       });
-      await feishu.replyText(messageId, "New Grok CLI session created for this Feishu chat. Long-term memory is preserved.");
+      await feishu.replyText(messageId, "New GPT5.5 session created for this Feishu chat.");
       pushRouteDecision({ ...baseRouteLog, ignored: false, routeReason: "p2p_control_new", promptFromQuotedMessage });
       return;
     }
