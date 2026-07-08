@@ -705,7 +705,7 @@ function grokTextTag(elementId, content, color = "grey") {
   };
 }
 
-function grokHeaderTags(title = "", { webSearch = false, streaming = false, done = false, modeTagColor = "", memorySync = false, memoryRecall = false } = {}) {
+function grokHeaderTags(title = "", { webSearch = false, streaming = false, done = false, modeTagColor = "", memorySync = false, memoryRecall = false, compact = false } = {}) {
   const mode = grokModeLabel(title, { webSearch });
   const effectiveModeColor = CARD_TEXT_TAG_COLORS.has(modeTagColor)
     ? modeTagColor
@@ -713,11 +713,11 @@ function grokHeaderTags(title = "", { webSearch = false, streaming = false, done
   const tags = [
     grokTextTag("mode_tag", mode, effectiveModeColor)
   ];
-  if (memoryRecall) tags.push(grokTextTag("memory_recall_tag", "调取记忆库", "indigo"));
-  if (memorySync) tags.push(grokTextTag("memory_sync_tag", "同步记忆库", "green"));
-  if (streaming) tags.push(grokTextTag("stream_tag", "流式", "turquoise"));
-  if (done) tags.push(grokTextTag("done_tag", "完成", "turquoise"));
-  if (/视频|媒体|图片|图像|照片|video|image|photo/i.test(`${title}`)) {
+  if (!compact && memoryRecall) tags.push(grokTextTag("memory_recall_tag", "调取记忆库", "indigo"));
+  if (!compact && memorySync) tags.push(grokTextTag("memory_sync_tag", "同步记忆库", "green"));
+  if (!compact && streaming) tags.push(grokTextTag("stream_tag", "流式", "turquoise"));
+  if (!compact && done) tags.push(grokTextTag("done_tag", "完成", "turquoise"));
+  if (!compact && /视频|媒体|图片|图像|照片|video|image|photo/i.test(`${title}`)) {
     tags.push(grokTextTag("media_tag", "媒体", "red"));
   }
   return tags;
@@ -786,7 +786,7 @@ function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = fa
         tag: "plain_text",
         content: grokCardSubtitle({ webSearch, media, streaming: true })
       },
-      text_tag_list: grokHeaderTags(title, { webSearch, streaming: true, modeTagColor, memorySync, memoryRecall })
+      text_tag_list: grokHeaderTags(title, { webSearch, streaming: true, modeTagColor, memorySync, memoryRecall, compact: true })
     },
     body: {
       direction: "vertical",
@@ -2276,7 +2276,7 @@ async function answerWithGrok(prompt) {
   return callGrokCli(prompt);
 }
 
-function createCardKitStreamingUpdater({ feishu, cardId, title, webSearch, memorySync = false, memoryRecall = false }) {
+function createCardKitStreamingUpdater({ feishu, cardId, messageId = "", title, webSearch, memorySync = false, memoryRecall = false }) {
   let sequence = 0;
   let lastAnswerAt = 0;
   let lastStatusAt = 0;
@@ -2330,12 +2330,18 @@ function createCardKitStreamingUpdater({ feishu, cardId, title, webSearch, memor
       await queue;
       await patchAnswer(latestAnswer, true);
       await queue;
-      await feishu.updateCard(cardId, buildFinalCard(latestAnswer, title, {
-        webSearch,
-        memorySync,
-        memoryRecall,
-        ...footerStatus
-      }), nextSequence());
+      try {
+        await feishu.updateCard(cardId, buildFinalCard(latestAnswer, title, {
+          webSearch,
+          memorySync,
+          memoryRecall,
+          ...footerStatus
+        }), nextSequence());
+      } catch (error) {
+        console.warn(`CardKit final update failed, falling back to final rich card: ${error.message}`);
+        if (!messageId) throw error;
+        await feishu.replyRich(messageId, latestAnswer || "没有生成可发送的回复。", title);
+      }
       await queue;
     },
     fail: async (errorText) => {
@@ -2350,6 +2356,23 @@ function createCardKitStreamingUpdater({ feishu, cardId, title, webSearch, memor
         }
       }, nextSequence()));
       await queue;
+    }
+  };
+}
+
+function createPlainFinalUpdater({ feishu, messageId, title }) {
+  let latestAnswer = "";
+  return {
+    patchAnswer: (text) => {
+      latestAnswer = sanitizeFeishuText(text);
+      return Promise.resolve();
+    },
+    patchStatus: () => Promise.resolve(),
+    finish: async () => {
+      await feishu.replyRich(messageId, latestAnswer || "没有生成可发送的回复。", title);
+    },
+    fail: async (errorText) => {
+      await feishu.replyRich(messageId, sanitizeFeishuText(errorText), "OpenAI 运行错误");
     }
   };
 }
@@ -3778,28 +3801,36 @@ async function processFeishuMessage(payload) {
   let quotedTempFiles = [];
   let quotedContext = null;
   try {
-    const streamingCard = await feishu.replyStreamingCard(
-      messageId,
-      "",
-      title,
-      {
+    try {
+      const streamingCard = await feishu.replyStreamingCard(
+        messageId,
+        "",
+        title,
+        {
+          webSearch: job.webSearch,
+          status: job.webSearch ? "正在调用 GPT5.5 联网搜索" : "正在调用 GPT5.5",
+          memorySync: memoryDirectives.sync,
+          memoryRecall: memoryDirectives.recall
+        }
+      );
+      markTiming("streamingCardReadyMs");
+      job.cardId = streamingCard.cardId;
+      job.replyMessageId = feishuMessageId(streamingCard.response);
+      updater = createCardKitStreamingUpdater({
+        feishu,
+        cardId: streamingCard.cardId,
+        messageId,
+        title,
         webSearch: job.webSearch,
-        status: job.webSearch ? "正在调用 GPT5.5 联网搜索" : "正在调用 GPT5.5",
         memorySync: memoryDirectives.sync,
         memoryRecall: memoryDirectives.recall
-      }
-    );
-    markTiming("streamingCardReadyMs");
-    job.cardId = streamingCard.cardId;
-    job.replyMessageId = feishuMessageId(streamingCard.response);
-    updater = createCardKitStreamingUpdater({
-      feishu,
-      cardId: streamingCard.cardId,
-      title,
-      webSearch: job.webSearch,
-      memorySync: memoryDirectives.sync,
-      memoryRecall: memoryDirectives.recall
-    });
+      });
+    } catch (error) {
+      job.cardKitError = error.message;
+      console.warn(`CardKit streaming bootstrap failed, falling back to final rich card: ${error.message}`);
+      updater = createPlainFinalUpdater({ feishu, messageId, title });
+      markTiming("streamingCardFallbackMs");
+    }
     const quotedResult = await quotedContextPromise;
     if (quotedResult.error) throw quotedResult.error;
     quotedContext = quotedResult.context;
