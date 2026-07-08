@@ -96,6 +96,8 @@ const config = {
   obsidianGithubRepo: process.env.OBSIDIAN_GITHUB_REPO || "Mad12345-qw/obsidian-knowledge-sync",
   obsidianGithubBranch: process.env.OBSIDIAN_GITHUB_BRANCH || "main",
   obsidianFolder: stripSlashes(process.env.OBSIDIAN_RESEARCH_FOLDER || "gpt55-research"),
+  sessionHistoryTurns: envNumber("GPT_SESSION_HISTORY_TURNS", 12),
+  memoryRecallLimit: envNumber("MEMORY_RECALL_LIMIT", 5),
   grokCliEnabled: envFlag("GROK_CLI_ENABLED", true),
   grokCliCommand: process.env.GROK_CLI_COMMAND || path.join(process.cwd(), ".grok", "bin", GROK_EXECUTABLE_NAME),
   grokCliCwd: process.env.GROK_CLI_CWD || path.join(os.tmpdir(), "grok-feishu-bridge-cwd"),
@@ -1236,6 +1238,19 @@ function slugify(value = "") {
     .replace(/^-+|-+$/g, "") || "research";
 }
 
+function unique(items = []) {
+  return [...new Set(items)];
+}
+
+function splitTerms(text = "") {
+  return unique(String(text || "")
+    .replace(/[^\p{L}\p{N}._-]+/gu, " ")
+    .split(/\s+/)
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length >= 2)
+    .slice(0, 24));
+}
+
 function markdownToTextBlocks(markdown = "") {
   return String(markdown || "")
     .split(/\r?\n/)
@@ -1324,6 +1339,18 @@ function parseControlCommand(text = "") {
   const name = match[1].toLowerCase();
   if (name === "new" || name === "reset") return { name: "new" };
   return { name };
+}
+
+function parseMemoryDirectives(text = "") {
+  const raw = String(text || "");
+  const sync = raw.includes("同步记忆库");
+  const recall = raw.includes("调取记忆库");
+  const cleaned = raw
+    .replaceAll("同步记忆库", "")
+    .replaceAll("调取记忆库", "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { sync, recall, cleaned };
 }
 
 function isDeepResearch(text = "") {
@@ -1430,6 +1457,76 @@ function writeFeishuSessionState(state) {
   }, null, 2));
 }
 
+function openAiChatHistoryPath() {
+  return path.join(os.homedir(), ".grok", "memory", "openai-chat-history.json");
+}
+
+function readOpenAiChatHistory() {
+  try {
+    const filePath = openAiChatHistoryPath();
+    if (!fs.existsSync(filePath)) return { v: 1, chats: {} };
+    const parsed = parseJson(fs.readFileSync(filePath, "utf8"), {});
+    return {
+      v: 1,
+      chats: parsed && typeof parsed.chats === "object" && parsed.chats ? parsed.chats : {}
+    };
+  } catch {
+    return { v: 1, chats: {} };
+  }
+}
+
+function writeOpenAiChatHistory(state) {
+  const filePath = openAiChatHistoryPath();
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify({
+    v: 1,
+    updatedAt: new Date().toISOString(),
+    chats: state.chats || {}
+  }, null, 2));
+}
+
+function chatHistoryKey(session = null) {
+  return session?.scopeKey || session?.sessionId || "";
+}
+
+function readChatHistory(session = null) {
+  const key = chatHistoryKey(session);
+  if (!key) return [];
+  const state = readOpenAiChatHistory();
+  const turns = state.chats?.[key]?.turns;
+  return Array.isArray(turns) ? turns.slice(-config.sessionHistoryTurns) : [];
+}
+
+function appendChatHistory(session = null, { user = "", assistant = "" } = {}) {
+  const key = chatHistoryKey(session);
+  if (!key || (!user && !assistant)) return;
+  const state = readOpenAiChatHistory();
+  const existing = Array.isArray(state.chats?.[key]?.turns) ? state.chats[key].turns : [];
+  const next = [
+    ...existing,
+    {
+      at: new Date().toISOString(),
+      user: String(user || "").slice(0, 6000),
+      assistant: String(assistant || "").slice(0, 12000)
+    }
+  ].slice(-Math.max(1, config.sessionHistoryTurns));
+  state.chats[key] = {
+    sessionId: session?.sessionId || "",
+    scopeKey: key,
+    updatedAt: new Date().toISOString(),
+    turns: next
+  };
+  writeOpenAiChatHistory(state);
+}
+
+function resetChatHistory(session = null) {
+  const key = chatHistoryKey(session);
+  if (!key) return;
+  const state = readOpenAiChatHistory();
+  delete state.chats[key];
+  writeOpenAiChatHistory(state);
+}
+
 function chatSessionScope(message = {}) {
   const chatId = message.chat_id || "";
   const chatType = message.chat_type || "unknown";
@@ -1516,7 +1613,33 @@ function grokCliArgs(prompt, { maxTurns, model, cwd = config.grokCliCwd, session
   return resolvedArgs;
 }
 
-function buildGrokPrompt(userPrompt = "", { quotedContext = null, taskRules = [] } = {}) {
+function buildConversationBlock(history = []) {
+  const turns = (Array.isArray(history) ? history : []).slice(-config.sessionHistoryTurns);
+  if (!turns.length) return "";
+  return [
+    "Recent conversation context for this Feishu chat:",
+    ...turns.map((turn, index) => [
+      `Turn ${index + 1}`,
+      turn.user ? `User: ${turn.user}` : "",
+      turn.assistant ? `Assistant: ${turn.assistant}` : ""
+    ].filter(Boolean).join("\n"))
+  ].join("\n\n");
+}
+
+function buildMemoryContextBlock(memoryItems = []) {
+  const items = Array.isArray(memoryItems) ? memoryItems.filter(Boolean) : [];
+  if (!items.length) return "";
+  return [
+    "Retrieved memory from this bot's own Obsidian/Wiki-synced research notes. Use it only when relevant, and do not assume it is current if the user asks for latest data.",
+    ...items.map((item, index) => [
+      `Memory ${index + 1}: ${item.title || item.path || "Untitled"}`,
+      item.path ? `Path: ${item.path}` : "",
+      item.preview ? `Content:\n${item.preview}` : ""
+    ].filter(Boolean).join("\n"))
+  ].join("\n\n");
+}
+
+function buildGrokPrompt(userPrompt = "", { quotedContext = null, taskRules = [], conversationHistory = [], memoryItems = [] } = {}) {
   const quotedLines = quotedContext
     ? [
         "The user explicitly replied to or quoted this Feishu message. Treat it as referenced context, then use your own agent judgment.",
@@ -1528,6 +1651,8 @@ function buildGrokPrompt(userPrompt = "", { quotedContext = null, taskRules = []
     : [];
   return [
     config.systemPrompt,
+    buildConversationBlock(conversationHistory),
+    buildMemoryContextBlock(memoryItems),
     ...quotedLines,
     ...taskRules,
     "User message:",
@@ -1627,6 +1752,18 @@ class GitHubFileSync {
     }
   }
 
+  async listFiles(folderPath) {
+    const { owner, repo } = this.splitRepo();
+    const branch = encodeURIComponent(this.branch);
+    try {
+      const data = await this.request(`/repos/${owner}/${repo}/contents/${encodeGitHubPath(folderPath)}?ref=${branch}`);
+      return Array.isArray(data) ? data.filter((item) => item.type === "file") : [];
+    } catch (error) {
+      if (error.status === 404) return [];
+      throw error;
+    }
+  }
+
   async putFile(notePath, content, message) {
     const { owner, repo } = this.splitRepo();
     const remote = await this.getFile(notePath);
@@ -1657,8 +1794,8 @@ class GitHubFileSync {
   }
 }
 
-async function callGrokCli(prompt, { onText, onEvent, maxTurns, model = "", quotedContext = null, taskRules = [], timeoutMs, session = null, memoryEnabled = config.grokMemoryEnabled } = {}) {
-  const effectivePrompt = buildGrokPrompt(prompt, { quotedContext, taskRules });
+async function callGrokCli(prompt, { onText, onEvent, maxTurns, model = "", quotedContext = null, taskRules = [], timeoutMs, session = null, memoryEnabled = config.grokMemoryEnabled, conversationHistory = [], memoryItems = [] } = {}) {
+  const effectivePrompt = buildGrokPrompt(prompt, { quotedContext, taskRules, conversationHistory, memoryItems });
   return callGpt55Responses(effectivePrompt, { onText, onEvent, timeoutMs });
 }
 
@@ -2688,6 +2825,58 @@ async function maybeSyncObsidian(title, markdown) {
   return { synced: true, path: notePath, repo: config.obsidianGithubRepo, branch: config.obsidianGithubBranch };
 }
 
+function obsidianIndexPaths(indexContent = "") {
+  const paths = [];
+  for (const match of String(indexContent || "").matchAll(/\[\[([^|\]]+)(?:\|[^\]]+)?\]\]/g)) {
+    const pathValue = match[1].trim();
+    if (pathValue) paths.push(pathValue.endsWith(".md") ? pathValue : `${pathValue}.md`);
+  }
+  return unique(paths);
+}
+
+function memoryScore(content = "", terms = []) {
+  const lower = String(content || "").toLowerCase();
+  return terms.reduce((score, term) => score + (lower.includes(term) ? 1 : 0), 0);
+}
+
+function noteTitleFromMarkdown(markdown = "", fallback = "") {
+  return String(markdown || "").match(/^#\s+(.+)$/m)?.[1]?.trim().slice(0, 100) || fallback;
+}
+
+async function recallObsidianMemory(query = "", limit = config.memoryRecallLimit) {
+  if (!config.obsidianSyncEnabled || !obsidianSync.enabled) return [];
+  const terms = splitTerms(query);
+  if (!terms.length) return [];
+  const indexPath = `${config.obsidianFolder}/index.md`;
+  const indexFile = await obsidianSync.getFile(indexPath).catch(() => ({ content: "" }));
+  let paths = obsidianIndexPaths(indexFile.content).slice(-40).reverse();
+  if (!paths.length) {
+    const files = await obsidianSync.listFiles(config.obsidianFolder);
+    paths = files
+      .map((item) => `${config.obsidianFolder}/${item.name}`)
+      .filter((item) => /\.md$/i.test(item) && !/\/index\.md$/i.test(item))
+      .slice(-40)
+      .reverse();
+  }
+  const notes = [];
+  for (const notePath of paths.slice(0, 40)) {
+    const file = await obsidianSync.getFile(notePath).catch(() => null);
+    const content = file?.content || "";
+    if (!content) continue;
+    const score = memoryScore(content, terms);
+    if (score <= 0) continue;
+    notes.push({
+      path: notePath,
+      title: noteTitleFromMarkdown(content, notePath),
+      score,
+      preview: content.slice(0, 1800)
+    });
+  }
+  return notes
+    .sort((a, b) => b.score - a.score || String(b.path).localeCompare(String(a.path)))
+    .slice(0, Math.max(1, Number(limit) || 5));
+}
+
 function buildSyncFooter(doc, obsidianResult) {
   const lines = [];
   if (doc?.url) lines.push(`Feishu Wiki: ${doc.url}`);
@@ -2799,6 +2988,10 @@ app.get("/health", (_req, res) => {
     videoMaxTurns: config.videoMaxTurns,
     grokMemoryEnabled: config.grokMemoryEnabled,
     grokStateSyncEnabled: config.grokStateSyncEnabled,
+    sessionHistoryTurns: config.sessionHistoryTurns,
+    memoryRecallLimit: config.memoryRecallLimit,
+    memorySyncMode: "explicit-field:同步记忆库",
+    memoryRecallMode: "explicit-field:调取记忆库",
     cardMode: "feishu-cardkit-streaming-json-2.0",
     webSearchMode: config.gpt55WebSearchEnabled ? "gpt55-responses-web-search" : "gpt55-responses"
   });
@@ -3399,7 +3592,12 @@ async function processFeishuMessage(payload) {
     }
     return quotedContextPromise;
   };
-  let prompt = directPrompt;
+  const initialDirectives = parseMemoryDirectives(directPrompt);
+  let prompt = initialDirectives.cleaned;
+  let memoryDirectives = {
+    sync: initialDirectives.sync,
+    recall: initialDirectives.recall
+  };
   let promptFromQuotedMessage = false;
   if (!prompt) {
     const quotedResult = await loadQuotedContext();
@@ -3407,7 +3605,12 @@ async function processFeishuMessage(payload) {
       pushRouteDecision({ ...baseRouteLog, ignored: true, routeReason: "empty_prompt_quote_error", error: quotedResult.error.message });
       return;
     }
-    const quotedText = String(quotedResult.context?.text || "").trim();
+    const quotedDirectives = parseMemoryDirectives(String(quotedResult.context?.text || "").trim());
+    const quotedText = quotedDirectives.cleaned;
+    memoryDirectives = {
+      sync: memoryDirectives.sync || quotedDirectives.sync,
+      recall: memoryDirectives.recall || quotedDirectives.recall
+    };
     const quotedFileCount = quotedResult.context?.files?.filter((item) => item.path).length || 0;
     if (quotedText) {
       prompt = quotedText;
@@ -3453,6 +3656,7 @@ async function processFeishuMessage(payload) {
     jobs.set(messageId, job);
     if (control.name === "new") {
       const session = resetChatSessionScope(message);
+      resetChatHistory(session);
       job.sessionId = session?.sessionId || "";
       job.previousSessionId = session?.previousSessionId || "";
       job.sessionScope = session?.scopeKey || "";
@@ -3481,6 +3685,8 @@ async function processFeishuMessage(payload) {
     taskKind: task.kind,
     webSearch: task.webSearch,
     mediaTask: task.mediaTask,
+    memorySyncRequested: Boolean(memoryDirectives.sync),
+    memoryRecallRequested: Boolean(memoryDirectives.recall),
     promptFromQuotedMessage,
     sessionId: session?.sessionId || "",
     sessionScope: session?.scopeKey || "",
@@ -3528,10 +3734,23 @@ async function processFeishuMessage(payload) {
     job.quotedFileCount = quotedContext?.files?.filter((item) => item.path).length || 0;
     job.quotedChain = quotedContext?.chain || [];
     markTiming("quotedContextReadyMs");
+    const conversationHistory = readChatHistory(session);
+    job.sessionHistoryTurns = conversationHistory.length;
+    const memoryItems = memoryDirectives.recall
+      ? await recallObsidianMemory(prompt).catch((error) => {
+          job.memoryRecallError = error.message;
+          console.warn(`Memory recall failed: ${error.message}`);
+          return [];
+        })
+      : [];
+    job.memoryRecallCount = memoryItems.length;
+    markTiming("memoryReadyMs");
     const grokOptions = {
       maxTurns: task.maxTurns,
       quotedContext,
       session,
+      conversationHistory,
+      memoryItems,
       mediaTask: task.mediaTask,
       taskRules: task.rules,
       onText: (fullText) => {
@@ -3555,14 +3774,21 @@ async function processFeishuMessage(payload) {
     const imagePaths = extractLocalImagePaths(answer);
     const videoPaths = extractLocalVideoPaths(answer);
     const answerWithoutMediaPaths = stripLocalMediaPaths(answer);
-    const syncResult = await syncResearchArtifacts({
-      prompt,
-      answer: answerWithoutMediaPaths || answer,
-      title: researchNoteTitle(prompt, title),
-      quotedContext,
-      messageId,
-      job
+    appendChatHistory(session, { user: prompt, assistant: answerWithoutMediaPaths || answer });
+    await syncGrokStateIfChanged("openai-chat-history").catch((error) => {
+      job.stateSyncError = error.message;
+      console.warn(`OpenAI chat history state sync failed: ${error.message}`);
     });
+    const syncResult = memoryDirectives.sync
+      ? await syncResearchArtifacts({
+          prompt,
+          answer: answerWithoutMediaPaths || answer,
+          title: researchNoteTitle(prompt, title),
+          quotedContext,
+          messageId,
+          job
+        })
+      : { footer: "" };
     job.status = "completed";
     job.completedAt = new Date().toISOString();
     if (imagePaths.length || videoPaths.length) {
