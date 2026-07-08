@@ -37,13 +37,9 @@ const config = {
 };
 
 const app = express();
-const feishu = new FeishuClient(config);
-const db = new ResearchIndex(config);
-const obsidian = new GitHubFileSync({
-  token: config.obsidianGithubToken,
-  repo: config.obsidianGithubRepo,
-  branch: config.obsidianGithubBranch
-});
+let feishu;
+let db;
+let obsidian;
 
 const jobs = new Map();
 const seenMessageIds = new Map();
@@ -51,10 +47,6 @@ const botReplyMessageIds = new Set();
 
 app.use(express.json({ limit: "2mb" }));
 app.set("trust proxy", true);
-
-await db.init().catch((error) => {
-  console.warn(`Research index init skipped: ${error.message}`);
-});
 
 app.get("/", (_req, res) => {
   res.json({
@@ -147,10 +139,6 @@ app.post("/feishu/events", async (req, res) => {
   processFeishuMessage(payload).catch((error) => {
     console.error(`Feishu background job failed: ${error.stack || error.message}`);
   });
-});
-
-app.listen(config.port, () => {
-  console.log(`${SERVICE_NAME} listening on ${config.port}`);
 });
 
 async function processFeishuMessage(payload) {
@@ -1013,3 +1001,19 @@ function rememberSeenMessage(messageId) {
     if (Date.now() - ts > 30 * 60 * 1000) seenMessageIds.delete(id);
   }
 }
+
+feishu = new FeishuClient(config);
+db = new ResearchIndex(config);
+obsidian = new GitHubFileSync({
+  token: config.obsidianGithubToken,
+  repo: config.obsidianGithubRepo,
+  branch: config.obsidianGithubBranch
+});
+
+await db.init().catch((error) => {
+  console.warn(`Research index init skipped: ${error.message}`);
+});
+
+app.listen(config.port, () => {
+  console.log(`${SERVICE_NAME} listening on ${config.port}`);
+});
