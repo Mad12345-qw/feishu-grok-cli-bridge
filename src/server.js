@@ -2643,10 +2643,9 @@ app.get("/debug/grok-test", async (req, res) => {
     return;
   }
   try {
-    const prompt = String(req.query.prompt || "用一句中文回答：Render Grok CLI 已经可以运行。").slice(0, 500);
-    const command = await ensureGrokCliCommand();
+    const prompt = String(req.query.prompt || "用一句中文回答：GPT5.5 Responses 联网桥已经可以运行。").slice(0, 1000);
     const answer = await callGrokCli(prompt, { memoryEnabled: false });
-    res.json({ ok: true, command, answer: answer.slice(0, 2000) });
+    res.json({ ok: true, model: config.gpt55Model, webSearchEnabled: config.gpt55WebSearchEnabled, answer: answer.slice(0, 4000) });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
