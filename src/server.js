@@ -48,7 +48,7 @@ const CARD_TEXT_TAG_COLORS = new Set([
   "grey"
 ]);
 const DEFAULT_SYSTEM_PROMPT = [
-  "You are Grok connected to a Feishu bot.",
+  "You are OpenAI connected to a Feishu bot.",
   "Reply in the user's language.",
   "When the user asks for latest, current, prices, news, or web facts, use web search if available.",
   "Be direct, include dates for time-sensitive facts, and do not invent sources.",
@@ -134,7 +134,7 @@ async function syncGrokAuthIfChanged(reason = "unknown") {
   if (hash && hash === lastObservedGrokAuthHash) return;
   const result = await saveAuthJsonToStore(json);
   lastObservedGrokAuthHash = hash;
-  console.log(`Grok auth synced to Redis after ${reason}: ${result.hashPrefix}`);
+  console.log(`OpenAI auth synced to Redis after ${reason}: ${result.hashPrefix}`);
 }
 
 lastObservedGrokAuthHash = currentGrokAuthHash();
@@ -527,7 +527,7 @@ async function syncGrokStateIfChanged(reason = "unknown") {
   const result = await saveGrokStateToStore();
   if (result.saved) {
     lastObservedGrokStateHash = hash;
-    console.log(`Grok state synced after ${reason}: ${result.fileCount} Redis-scope files, ${result.skippedCount} skipped, remote=${result.remote?.saved ? "yes" : "no"}.`);
+    console.log(`OpenAI state synced after ${reason}: ${result.fileCount} Redis-scope files, ${result.skippedCount} skipped, remote=${result.remote?.saved ? "yes" : "no"}.`);
   }
 }
 
@@ -656,7 +656,7 @@ function sourceButtonsV2(text = "") {
 }
 
 function grokHeaderTemplate(template = "") {
-  return CARD_HEADER_TEMPLATES.has(template) ? template : "grey";
+  return CARD_HEADER_TEMPLATES.has(template) ? template : "red";
 }
 
 function grokModeLabel(title = "", { webSearch = false } = {}) {
@@ -670,7 +670,7 @@ function grokModeLabel(title = "", { webSearch = false } = {}) {
 
 function grokCardSubtitle({ webSearch = false, media = false, streaming = false } = {}) {
   return [
-    "Grok CLI",
+    "OpenAI CLI",
     media ? "媒体结果卡片" : webSearch ? "联网检索" : "原生卡片",
     streaming ? "流式更新" : "完成"
   ].join(" · ");
@@ -712,11 +712,11 @@ function grokFooterNote({ webSearch = false } = {}) {
   return {
     tag: "markdown",
     element_id: "grok_footer",
-    content: webSearch ? "X1 · Grok Bridge · 联网检索" : "X1 · Grok Bridge"
+    content: webSearch ? "X1 · OpenAI Bridge · 联网检索" : "X1 · OpenAI Bridge"
   };
 }
 
-function buildStreamingCard(text = "", title = "Grok 回复", { webSearch = false, status = "Grok CLI 已接管任务", headerTemplate = "", modeTagColor = "" } = {}) {
+function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = false, status = "OpenAI CLI 已接管任务", headerTemplate = "", modeTagColor = "" } = {}) {
   const media = /视频|媒体|图片|图像|照片|video|image|photo|picture/i.test(`${title}`);
   return {
     schema: "2.0",
@@ -726,7 +726,7 @@ function buildStreamingCard(text = "", title = "Grok 回复", { webSearch = fals
       enable_forward: false,
       width_mode: "fill",
       summary: {
-        content: "[生成中...] Grok CLI"
+        content: "[生成中...] OpenAI CLI"
       },
       streaming_config: {
         print_frequency_ms: { default: 45, android: 45, ios: 45, pc: 45 },
@@ -770,7 +770,7 @@ function buildStreamingCard(text = "", title = "Grok 回复", { webSearch = fals
   };
 }
 
-function buildFinalCard(text = "", title = "Grok 回复", { webSearch = false, headerTemplate = "", modeTagColor = "" } = {}) {
+function buildFinalCard(text = "", title = "OpenAI 回复", { webSearch = false, headerTemplate = "", modeTagColor = "" } = {}) {
   const safe = sanitizeFeishuText(text);
   const media = /视频|媒体|图片|图像|照片|video|image|photo|picture/i.test(`${title}\n${safe}`);
   const elements = [
@@ -814,7 +814,7 @@ function buildFinalCard(text = "", title = "Grok 回复", { webSearch = false, h
   };
 }
 
-function buildFeishuCard(text = "", title = "Grok 回复", { webSearch = false, part = 1, total = 1, headerTemplate = "" } = {}) {
+function buildFeishuCard(text = "", title = "OpenAI 回复", { webSearch = false, part = 1, total = 1, headerTemplate = "" } = {}) {
   const safe = sanitizeFeishuText(text);
   const elements = [
     {
@@ -831,7 +831,7 @@ function buildFeishuCard(text = "", title = "Grok 回复", { webSearch = false, 
       {
         tag: "plain_text",
         content: [
-          webSearch ? "Grok CLI · 联网检索" : "Grok CLI",
+          webSearch ? "OpenAI CLI · 联网检索" : "OpenAI CLI",
           total > 1 ? `第 ${part}/${total} 段` : "飞书卡片富文本"
         ].join(" · ")
       }
@@ -947,7 +947,7 @@ function markdownLineToPostNodes(line = "", inCodeBlock = false) {
   return nodes.length ? nodes : [{ tag: "text", text: plainMarkdownLine(raw) || " " }];
 }
 
-function buildFeishuPostContent(text = "", title = "Grok 回复") {
+function buildFeishuPostContent(text = "", title = "OpenAI 回复") {
   const safe = sanitizeFeishuText(text);
   const lines = safe.split("\n");
   const content = [];
@@ -983,12 +983,12 @@ async function ensureGrokCliCommand() {
       await execFileAsync(config.grokCliCommand, ["--version"], { timeout: 10000, windowsHide: true });
       return config.grokCliCommand;
     } catch (error) {
-      throw new Error(`Configured Grok CLI command is not available on PATH: ${config.grokCliCommand}; ${error.message}`);
+      throw new Error(`Configured OpenAI CLI command is not available on PATH: ${config.grokCliCommand}; ${error.message}`);
     }
   }
 
   if (!isExecutable(config.grokCliCommand)) {
-    throw new Error(`Configured Grok CLI path does not exist or is not executable: ${config.grokCliCommand}`);
+    throw new Error(`Configured OpenAI CLI path does not exist or is not executable: ${config.grokCliCommand}`);
   }
   return config.grokCliCommand;
 }
@@ -1285,12 +1285,12 @@ function classifyTask(text = "") {
     return {
       kind: "video",
       maxTurns: config.videoMaxTurns,
-      title: "Grok 视频生成",
+      title: "OpenAI 视频生成",
       webSearch: false,
       mediaTask: true,
       prompt: media.prompt,
       rules: [
-        "This is a Grok Build video task. Use the available Grok Build media tools, especially image_to_video or reference_to_video. If no reference image is provided, create a source image first, then animate it. Do not create videos with Python, FFmpeg, shell scripts, or code. Return the saved local MP4 path."
+        "This is a OpenAI Build video task. Use the available OpenAI Build media tools, especially image_to_video or reference_to_video. If no reference image is provided, create a source image first, then animate it. Do not create videos with Python, FFmpeg, shell scripts, or code. Return the saved local MP4 path."
       ]
     };
   }
@@ -1298,12 +1298,12 @@ function classifyTask(text = "") {
     return {
       kind: "image",
       maxTurns: config.mediaMaxTurns,
-      title: "Grok 图片生成",
+      title: "OpenAI 图片生成",
       webSearch: false,
       mediaTask: true,
       prompt: media.prompt,
       rules: [
-        "This is a Grok Imagine image task. Use the built-in image generation capability, such as /imagine, and return the saved local image path. If quoted files are provided, use them as explicit references."
+        "This is a OpenAI Imagine image task. Use the built-in image generation capability, such as /imagine, and return the saved local image path. If quoted files are provided, use them as explicit references."
       ]
     };
   }
@@ -1312,7 +1312,7 @@ function classifyTask(text = "") {
     return {
       kind: deep ? "research" : "quick_search",
       maxTurns: deep ? 18 : 10,
-      title: "Grok 联网检索",
+      title: "OpenAI 联网检索",
       webSearch: true,
       mediaTask: false,
       rules: [WEB_SOURCE_LINK_RULE]
@@ -1322,7 +1322,7 @@ function classifyTask(text = "") {
     return {
       kind: "quick_fact",
       maxTurns: 6,
-      title: "Grok 回复",
+      title: "OpenAI 回复",
       webSearch: false,
       mediaTask: false,
       rules: []
@@ -1331,7 +1331,7 @@ function classifyTask(text = "") {
   return {
     kind: "chat",
     maxTurns: 8,
-    title: "Grok 回复",
+    title: "OpenAI 回复",
     webSearch: false,
     mediaTask: false,
     rules: []
@@ -1627,7 +1627,7 @@ async function callGrokImagineVideo(prompt, options = {}) {
   });
   const videoPaths = extractLocalVideoPaths(answer);
   if (!videoPaths.length) {
-    throw new Error(`Grok video task finished without a safe MP4 path. Output: ${stripLocalMediaPaths(answer).slice(-1600)}`);
+    throw new Error(`OpenAI video task finished without a safe MP4 path. Output: ${stripLocalMediaPaths(answer).slice(-1600)}`);
   }
   return answer;
 }
@@ -1994,7 +1994,7 @@ function createCardKitStreamingUpdater({ feishu, cardId, title, webSearch }) {
       await enqueue(() => feishu.updateCardSettings(cardId, {
         config: {
           streaming_mode: false,
-          summary: { content: "Grok CLI 运行失败" }
+          summary: { content: "OpenAI CLI 运行失败" }
         }
       }, nextSequence()));
       await queue;
@@ -2318,7 +2318,7 @@ class FeishuClient {
     return lastResponse;
   }
 
-  async replyPost(messageId, text, title = "Grok 回复") {
+  async replyPost(messageId, text, title = "OpenAI 回复") {
     if (!messageId) return;
     let lastResponse = null;
     for (const chunk of splitReply(sanitizeFeishuText(text), config.maxReplyChars)) {
@@ -2331,7 +2331,7 @@ class FeishuClient {
     return lastResponse;
   }
 
-  async replyRich(messageId, text, title = "Grok 回复") {
+  async replyRich(messageId, text, title = "OpenAI 回复") {
     if (!messageId) return;
     const chunks = splitForCard(text);
     let lastResponse = null;
@@ -2372,7 +2372,7 @@ class FeishuClient {
     return response;
   }
 
-  async replyStreamingCard(messageId, initialText, title = "Grok 回复", options = {}) {
+  async replyStreamingCard(messageId, initialText, title = "OpenAI 回复", options = {}) {
     const cardId = await this.createCardEntity(buildStreamingCard(initialText, title, options));
     const response = await this.replyCardEntity(messageId, cardId);
     return { cardId, response };
@@ -2415,7 +2415,7 @@ class FeishuClient {
     });
   }
 
-  async patchCard(messageId, text, title = "Grok 回复", options = {}) {
+  async patchCard(messageId, text, title = "OpenAI 回复", options = {}) {
     if (!messageId) return;
     return this.post(`/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`, {
       content: JSON.stringify(buildFeishuCard(text, title, options))
@@ -2479,12 +2479,12 @@ if (config.grokStateSyncEnabled) {
     const restored = await restoreGrokStateFromStore();
     if (restored.restored) {
       lastObservedGrokStateHash = currentGrokStateHash();
-      console.log(`Grok state restored from ${restored.source || "state store"}: ${restored.restoredFiles} files.`);
+      console.log(`OpenAI state restored from ${restored.source || "state store"}: ${restored.restoredFiles} files.`);
     } else {
-      console.log(`Grok state restore skipped: ${restored.reason}.`);
+      console.log(`OpenAI state restore skipped: ${restored.reason}.`);
     }
   } catch (error) {
-    console.warn(`Grok state restore failed: ${error.message}`);
+    console.warn(`OpenAI state restore failed: ${error.message}`);
   }
 }
 
@@ -2750,9 +2750,9 @@ app.get("/debug/card-style-test", async (req, res) => {
           "",
           "This is a real Feishu mobile preview card. Compare this header color on iPhone and desktop.",
           "",
-          "No Grok request was executed."
+          "No OpenAI request was executed."
         ].join("\n"),
-        `Grok ${template}`,
+        `OpenAI ${template}`,
         { headerTemplate: template }
       ));
       const response = await feishu.replyCardEntity(latestPrivateMessage.messageId, cardId);
@@ -2813,7 +2813,7 @@ app.get("/debug/card-tag-style-test", async (req, res) => {
           "",
           "Compare the small mode tag next to the title on iPhone and desktop."
         ].join("\n"),
-        `Grok tag ${color}`,
+        `OpenAI tag ${color}`,
         { headerTemplate: "grey", modeTagColor: color }
       ));
       const response = await feishu.replyCardEntity(latestPrivateMessage.messageId, cardId);
@@ -2863,7 +2863,7 @@ app.get("/debug/source-button-test", async (req, res) => {
   ].join("\n");
 
   try {
-    const cardId = await feishu.createCardEntity(buildFinalCard(sample, "Grok 来源按钮测试", { webSearch: true }));
+    const cardId = await feishu.createCardEntity(buildFinalCard(sample, "OpenAI 来源按钮测试", { webSearch: true }));
     const response = await feishu.replyCardEntity(latestPrivateMessage.messageId, cardId);
     res.json({
       ok: true,
@@ -2956,7 +2956,7 @@ app.get("/debug/grok-media-job", (req, res) => {
     res.status(404).json({ error: "not found" });
     return;
   }
-  const prompt = String(req.query.prompt || "生成视频：2-second minimal MP4 test video: blue sky with one slow white cloud. Use Grok Build official video generation and return the saved local MP4 path.").slice(0, 500);
+  const prompt = String(req.query.prompt || "生成视频：2-second minimal MP4 test video: blue sky with one slow white cloud. Use OpenAI Build official video generation and return the saved local MP4 path.").slice(0, 500);
   const timeoutMs = Math.min(Math.max(Number(req.query.timeoutMs || 180000) || 180000, 30000), 300000);
   const jobId = `debug-media-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
   const task = classifyTask(prompt);
@@ -3129,7 +3129,7 @@ async function processFeishuMessage(payload) {
       prompt = quotedText;
       promptFromQuotedMessage = true;
     } else if (quotedFileCount > 0) {
-      prompt = "The user mentioned Grok while replying to the quoted message. Use the quoted files and metadata as the user's input, then decide the task from that context.";
+      prompt = "The user mentioned OpenAI while replying to the quoted message. Use the quoted files and metadata as the user's input, then decide the task from that context.";
       promptFromQuotedMessage = true;
     }
   }
@@ -3173,13 +3173,13 @@ async function processFeishuMessage(payload) {
       job.previousSessionId = session?.previousSessionId || "";
       job.sessionScope = session?.scopeKey || "";
       await syncGrokStateIfChanged("control-new-session").catch((error) => {
-        console.warn(`Grok state Redis sync failed after control command: ${error.message}`);
+        console.warn(`OpenAI state Redis sync failed after control command: ${error.message}`);
       });
-      await feishu.replyText(messageId, "New Grok CLI session created for this Feishu chat. Long-term memory is preserved.");
+      await feishu.replyText(messageId, "New OpenAI CLI session created for this Feishu chat. Long-term memory is preserved.");
       pushRouteDecision({ ...baseRouteLog, ignored: false, routeReason: "p2p_control_new", promptFromQuotedMessage });
       return;
     }
-    await feishu.replyText(messageId, "Bridge control command received, but this command is not enabled. No Grok request was sent.");
+    await feishu.replyText(messageId, "Bridge control command received, but this command is not enabled. No OpenAI request was sent.");
     pushRouteDecision({ ...baseRouteLog, ignored: false, routeReason: "p2p_control_unsupported", promptFromQuotedMessage });
     return;
   }
@@ -3251,7 +3251,7 @@ async function processFeishuMessage(payload) {
       taskRules: task.rules,
       onText: (fullText) => {
         if (job.timings.firstTextMs == null) markTiming("firstTextMs");
-        updater.patchAnswer(stripLocalMediaPaths(fullText) || "媒体生成中，正在等待 Grok 返回真实文件。");
+        updater.patchAnswer(stripLocalMediaPaths(fullText) || "媒体生成中，正在等待 OpenAI 返回真实文件。");
       },
       onEvent: (event) => {
         if (job.timings.firstEventMs == null) markTiming("firstEventMs");
@@ -3298,7 +3298,7 @@ async function processFeishuMessage(payload) {
     job.completedAt = new Date().toISOString();
     markTiming("failedMs");
     const failure = [
-      "这次没有拿到 Grok 的最终回答，但我不会停在“正在检索”。",
+      "这次没有拿到 OpenAI 的最终回答，但我不会停在“正在检索”。",
       "",
       `原因：${error.message}`,
       "",
@@ -3307,7 +3307,7 @@ async function processFeishuMessage(payload) {
     if (updater) {
       await updater.fail(failure);
     } else {
-      await feishu.replyRich(messageId, failure, "Grok 运行错误");
+      await feishu.replyRich(messageId, failure, "OpenAI 运行错误");
     }
   } finally {
     safeDeleteLocalFiles(quotedTempFiles);
