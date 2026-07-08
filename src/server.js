@@ -727,11 +727,34 @@ function grokStatusMarkdown(status = "") {
   return `**● 状态**  ${cardMarkdown(status, 260)}`;
 }
 
-function grokFooterNote({ webSearch = false } = {}) {
+function grokFooterNote({
+  webSearch = false,
+  memoryRecall = false,
+  memorySync = false,
+  memoryRecallOk = null,
+  memoryRecallCount = null,
+  memorySyncOk = null,
+  wikiSynced = false,
+  obsidianSynced = false
+} = {}) {
+  const parts = ["X1", "OpenAI Bridge"];
+  if (webSearch) parts.push("联网检索");
+  if (memoryRecall) {
+    const count = Number.isFinite(Number(memoryRecallCount)) ? ` ${Number(memoryRecallCount)}条` : "";
+    parts.push(memoryRecallOk === false ? "调用知识库不成功" : `调用知识库成功${count}`);
+  }
+  if (memorySync) {
+    if (memorySyncOk) {
+      const targets = [wikiSynced ? "Wiki" : "", obsidianSynced ? "Obsidian" : ""].filter(Boolean).join("+");
+      parts.push(targets ? `同步知识库成功 ${targets}` : "同步知识库成功");
+    } else {
+      parts.push("同步知识库不成功");
+    }
+  }
   return {
     tag: "markdown",
     element_id: "grok_footer",
-    content: webSearch ? "X1 · OpenAI Bridge · 联网检索" : "X1 · OpenAI Bridge"
+    content: parts.join(" · ")
   };
 }
 
@@ -789,7 +812,18 @@ function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = fa
   };
 }
 
-function buildFinalCard(text = "", title = "OpenAI 回复", { webSearch = false, headerTemplate = "", modeTagColor = "", memorySync = false, memoryRecall = false } = {}) {
+function buildFinalCard(text = "", title = "OpenAI 回复", {
+  webSearch = false,
+  headerTemplate = "",
+  modeTagColor = "",
+  memorySync = false,
+  memoryRecall = false,
+  memoryRecallOk = null,
+  memoryRecallCount = null,
+  memorySyncOk = null,
+  wikiSynced = false,
+  obsidianSynced = false
+} = {}) {
   const safe = sanitizeFeishuText(text);
   const media = /视频|媒体|图片|图像|照片|video|image|photo|picture/i.test(`${title}\n${safe}`);
   const elements = [
@@ -800,7 +834,16 @@ function buildFinalCard(text = "", title = "OpenAI 回复", { webSearch = false,
     }
   ];
   elements.push({ tag: "hr" });
-  elements.push(grokFooterNote({ webSearch }));
+  elements.push(grokFooterNote({
+    webSearch,
+    memorySync,
+    memoryRecall,
+    memoryRecallOk,
+    memoryRecallCount,
+    memorySyncOk,
+    wikiSynced,
+    obsidianSynced
+  }));
   return {
     schema: "2.0",
     config: {
@@ -2283,11 +2326,16 @@ function createCardKitStreamingUpdater({ feishu, cardId, title, webSearch, memor
   return {
     patchAnswer,
     patchStatus,
-    finish: async () => {
+    finish: async (footerStatus = {}) => {
       await queue;
       await patchAnswer(latestAnswer, true);
       await queue;
-      await feishu.updateCard(cardId, buildFinalCard(latestAnswer, title, { webSearch, memorySync, memoryRecall }), nextSequence());
+      await feishu.updateCard(cardId, buildFinalCard(latestAnswer, title, {
+        webSearch,
+        memorySync,
+        memoryRecall,
+        ...footerStatus
+      }), nextSequence());
       await queue;
     },
     fail: async (errorText) => {
@@ -3815,6 +3863,15 @@ async function processFeishuMessage(payload) {
           job
         })
       : { footer: "" };
+    const footerStatus = {
+      memoryRecallOk: memoryDirectives.recall ? !job.memoryRecallError : null,
+      memoryRecallCount: memoryItems.length,
+      memorySyncOk: memoryDirectives.sync
+        ? Boolean((syncResult?.doc?.url || syncResult?.obsidianResult?.path) && !job.wikiError && !job.obsidianError)
+        : null,
+      wikiSynced: Boolean(syncResult?.doc?.url),
+      obsidianSynced: Boolean(syncResult?.obsidianResult?.path)
+    };
     job.status = "completed";
     job.completedAt = new Date().toISOString();
     if (imagePaths.length || videoPaths.length) {
@@ -3835,7 +3892,7 @@ async function processFeishuMessage(payload) {
     } else {
       await updater.patchAnswer(appendSyncFooter(answer, syncResult), true);
     }
-    await updater.finish();
+    await updater.finish(footerStatus);
     markTiming("finalCardDoneMs");
   } catch (error) {
     job.status = "failed";
