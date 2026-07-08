@@ -103,6 +103,32 @@ app.get("/debug/test-model", requireDebugToken, async (req, res) => {
   }
 });
 
+app.get("/debug/test-memory", requireDebugToken, async (req, res) => {
+  try {
+    const query = String(req.query.query || "").slice(0, 500);
+    if (!query) {
+      res.status(400).json({ ok: false, error: "query is required" });
+      return;
+    }
+    const results = await db.search(query, 8);
+    res.json({
+      ok: true,
+      query,
+      count: results.length,
+      results: results.map((item) => ({
+        sourceKind: item.sourceKind || "",
+        title: item.title || "",
+        feishuDocUrl: item.feishuDocUrl || "",
+        obsidianPath: item.obsidianPath || "",
+        createdAt: item.createdAt || "",
+        preview: truncate(item.answer || item.prompt || "", 500)
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.post("/feishu/events", async (req, res) => {
   let payload;
   try {
@@ -265,8 +291,10 @@ async function processFeishuMessage(payload) {
 async function runResearch(prompt, { quotedText = "", related = [] } = {}) {
   const relatedBlock = related.length
     ? related.map((item, index) => {
+        const sourceKind = item.sourceKind ? `Source: ${item.sourceKind}` : "";
         return [
           `#${index + 1} ${item.title || "Untitled"}`,
+          sourceKind,
           item.feishuDocUrl ? `Feishu: ${item.feishuDocUrl}` : "",
           item.obsidianPath ? `Obsidian: ${item.obsidianPath}` : "",
           truncate(item.answer || item.prompt || "", 1600)
@@ -370,7 +398,7 @@ async function maybeSyncObsidian(title, markdown) {
 function buildResearchMarkdown({ title, prompt, answer, quotedText, related, messageId }) {
   const now = new Date().toISOString();
   const relatedLines = related.length
-    ? related.map((item) => `- ${item.title || "Untitled"}${item.feishuDocUrl ? ` - ${item.feishuDocUrl}` : ""}${item.obsidianPath ? ` - ${item.obsidianPath}` : ""}`).join("\n")
+    ? related.map((item) => `- ${item.sourceKind ? `[${item.sourceKind}] ` : ""}${item.title || "Untitled"}${item.feishuDocUrl ? ` - ${item.feishuDocUrl}` : ""}${item.obsidianPath ? ` - ${item.obsidianPath}` : ""}`).join("\n")
     : "- none";
   return [
     "---",
@@ -669,22 +697,186 @@ class ResearchIndex {
     if (!this.pool) return [];
     const terms = splitTerms(query).slice(0, 8);
     if (!terms.length) return [];
+    const safeLimit = Math.max(1, Math.min(10, Number(limit) || 5));
+    const searches = await Promise.allSettled([
+      this.searchGpt55Notes(terms, safeLimit),
+      this.searchResearchSources(terms, safeLimit),
+      this.searchResearchReports(terms, safeLimit),
+      this.searchResearchTheses(terms, safeLimit)
+    ]);
+    return searches
+      .flatMap((result) => result.status === "fulfilled" ? result.value : [])
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+      .slice(0, safeLimit);
+  }
+
+  async searchGpt55Notes(terms, limit) {
     const clauses = [];
     const values = [];
     for (const term of terms) {
       values.push(`%${term}%`);
       clauses.push(`title ILIKE $${values.length} OR prompt ILIKE $${values.length} OR answer ILIKE $${values.length}`);
     }
-    values.push(Math.max(1, Math.min(10, Number(limit) || 5)));
-    const result = await this.pool.query(
-      `SELECT id, title, prompt, answer, feishu_doc_url AS "feishuDocUrl", obsidian_path AS "obsidianPath", created_at AS "createdAt"
-       FROM gpt55_research_notes
-       WHERE ${clauses.map((item) => `(${item})`).join(" OR ")}
-       ORDER BY created_at DESC
-       LIMIT $${values.length}`,
-      values
-    );
-    return result.rows || [];
+    values.push(limit);
+    try {
+      const result = await this.pool.query(
+        `SELECT id, 'gpt55_note' AS "sourceKind", title, prompt, answer,
+                feishu_doc_url AS "feishuDocUrl", obsidian_path AS "obsidianPath",
+                created_at AS "createdAt"
+         FROM gpt55_research_notes
+         WHERE ${clauses.map((item) => `(${item})`).join(" OR ")}
+         ORDER BY created_at DESC
+         LIMIT $${values.length}`,
+        values
+      );
+      return result.rows || [];
+    } catch (error) {
+      if (isMissingResearchTable(error)) return [];
+      throw error;
+    }
+  }
+
+  async searchResearchSources(terms, limit) {
+    const clauses = [];
+    const values = [];
+    for (const term of terms) {
+      values.push(`%${term}%`);
+      const slot = `$${values.length}`;
+      clauses.push([
+        `s.title ILIKE ${slot}`,
+        `s.author ILIKE ${slot}`,
+        `s.organization ILIKE ${slot}`,
+        `s.source_type ILIKE ${slot}`,
+        `s.platform ILIKE ${slot}`,
+        `s.raw_text ILIKE ${slot}`,
+        `s.metadata::text ILIKE ${slot}`,
+        `evidence_search.text ILIKE ${slot}`
+      ].join(" OR "));
+    }
+    values.push(limit);
+    try {
+      const result = await this.pool.query(
+        `SELECT s.source_id AS id,
+                'xiaoye_research_source' AS "sourceKind",
+                COALESCE(NULLIF(s.title, ''), s.source_id) AS title,
+                concat_ws(' ', s.source_type, s.platform, s.organization, s.author, s.url) AS prompt,
+                concat_ws(E'\n',
+                  NULLIF(s.raw_text, ''),
+                  NULLIF(evidence_search.text, ''),
+                  NULLIF(s.metadata::text, '{}')
+                ) AS answer,
+                s.doc_url AS "feishuDocUrl",
+                s.obsidian_path AS "obsidianPath",
+                COALESCE(s.analyzed_at, s.updated_at, s.created_at) AS "createdAt"
+         FROM research_sources s
+         LEFT JOIN LATERAL (
+           SELECT string_agg(
+                    DISTINCT concat_ws(' ', ec.claim, ec.quote_zh, ec.quote_original, ec.why_it_matters),
+                    E'\n'
+                  ) AS text
+           FROM research_evidence_cards ec
+           WHERE ec.source_id = s.source_id
+         ) evidence_search ON true
+         WHERE ${clauses.map((item) => `(${item})`).join(" OR ")}
+         ORDER BY COALESCE(s.analyzed_at, s.updated_at, s.created_at) DESC
+         LIMIT $${values.length}`,
+        values
+      );
+      return result.rows || [];
+    } catch (error) {
+      if (isMissingResearchTable(error)) return [];
+      throw error;
+    }
+  }
+
+  async searchResearchReports(terms, limit) {
+    const clauses = [];
+    const values = [];
+    for (const term of terms) {
+      values.push(`%${term}%`);
+      const slot = `$${values.length}`;
+      clauses.push([
+        `v.report_topic ILIKE ${slot}`,
+        `v.report_topic_key ILIKE ${slot}`,
+        `v.delta_summary ILIKE ${slot}`,
+        `v.metadata::text ILIKE ${slot}`,
+        `j.input::text ILIKE ${slot}`,
+        `j.output::text ILIKE ${slot}`
+      ].join(" OR "));
+    }
+    values.push(limit);
+    try {
+      const result = await this.pool.query(
+        `SELECT v.job_id AS id,
+                'xiaoye_report_version' AS "sourceKind",
+                COALESCE(NULLIF(v.report_topic, ''), NULLIF(j.input->>'query', ''), v.job_id) AS title,
+                COALESCE(j.input->>'query', v.report_topic, '') AS prompt,
+                concat_ws(E'\n',
+                  NULLIF(v.delta_summary, ''),
+                  'source_count=' || v.source_count::text,
+                  'evidence_count=' || v.evidence_count::text,
+                  NULLIF(j.output::text, '{}')
+                ) AS answer,
+                COALESCE(j.output->>'feishuDocUrl', j.output->>'feishu_doc_url', '') AS "feishuDocUrl",
+                COALESCE(j.output->>'obsidianPath', j.output->>'obsidian_path', '') AS "obsidianPath",
+                COALESCE(v.created_at, j.updated_at, j.created_at) AS "createdAt"
+         FROM research_report_versions v
+         JOIN research_jobs j ON j.id = v.job_id
+         WHERE ${clauses.map((item) => `(${item})`).join(" OR ")}
+         ORDER BY v.created_at DESC
+         LIMIT $${values.length}`,
+        values
+      );
+      return result.rows || [];
+    } catch (error) {
+      if (isMissingResearchTable(error)) return [];
+      throw error;
+    }
+  }
+
+  async searchResearchTheses(terms, limit) {
+    const clauses = [];
+    const values = [];
+    for (const term of terms) {
+      values.push(`%${term}%`);
+      const slot = `$${values.length}`;
+      clauses.push([
+        `topic_key ILIKE ${slot}`,
+        `thesis ILIKE ${slot}`,
+        `thesis_type ILIKE ${slot}`,
+        `conviction ILIKE ${slot}`,
+        `metadata::text ILIKE ${slot}`
+      ].join(" OR "));
+    }
+    values.push(limit);
+    try {
+      const result = await this.pool.query(
+        `SELECT id::text AS id,
+                'xiaoye_thesis_ledger' AS "sourceKind",
+                COALESCE(NULLIF(topic_key, ''), 'research thesis') AS title,
+                topic_key AS prompt,
+                concat_ws(E'\n',
+                  thesis,
+                  'type=' || thesis_type,
+                  'conviction=' || conviction,
+                  NULLIF(time_horizon, ''),
+                  NULLIF(metadata::text, '{}')
+                ) AS answer,
+                '' AS "feishuDocUrl",
+                '' AS "obsidianPath",
+                created_at AS "createdAt"
+         FROM research_thesis_ledger
+         WHERE status <> 'archived'
+           AND (${clauses.map((item) => `(${item})`).join(" OR ")})
+         ORDER BY created_at DESC
+         LIMIT $${values.length}`,
+        values
+      );
+      return result.rows || [];
+    } catch (error) {
+      if (isMissingResearchTable(error)) return [];
+      throw error;
+    }
   }
 
   async save(note) {
@@ -975,6 +1167,10 @@ function truncate(value, max) {
 
 function unique(items) {
   return [...new Set(items)];
+}
+
+function isMissingResearchTable(error) {
+  return error?.code === "42P01" || /relation .* does not exist/i.test(String(error?.message || ""));
 }
 
 function parseBool(value, fallback = false) {
