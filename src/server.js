@@ -63,6 +63,11 @@ const WEB_SOURCE_LINK_RULE = [
   "In that section, provide 1-4 Markdown links in the form `[short source name](https://...)`.",
   "Use only real source URLs that you actually used. Do not provide source names without URLs."
 ].join(" ");
+const SEARCH_REQUIRED_RULE = [
+  "The user requested web search for this turn.",
+  "You must perform at least one fresh web_search before answering.",
+  "For investment research, prefer the newest available primary filings, company announcements, exchange disclosures, and reputable financial news; clearly state dates for data points."
+].join(" ");
 
 function envFlag(name, fallback = false) {
   const value = process.env[name];
@@ -1343,16 +1348,27 @@ function parseControlCommand(text = "") {
   return { name };
 }
 
+function removeStandaloneDirective(text = "", directive = "") {
+  let found = false;
+  const pattern = new RegExp(`(^|[\\s,，;；、。:：])${escapeRegExp(directive)}(?=$|[\\s,，;；、。:：])`, "g");
+  const cleaned = String(text || "").replace(pattern, (match, prefix = "") => {
+    found = true;
+    return prefix && /\S/.test(prefix) ? prefix : " ";
+  });
+  return { found, cleaned };
+}
+
 function parseMemoryDirectives(text = "") {
   const raw = String(text || "");
   const sync = raw.includes("同步记忆库");
   const recall = raw.includes("调取记忆库");
-  const cleaned = raw
+  const search = removeStandaloneDirective(raw, "搜索");
+  const cleaned = search.cleaned
     .replaceAll("同步记忆库", "")
     .replaceAll("调取记忆库", "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return { sync, recall, cleaned };
+  return { sync, recall, webSearch: search.found, cleaned };
 }
 
 function isDeepResearch(text = "") {
@@ -1364,7 +1380,7 @@ function isQuickFact(text = "") {
     && /(是什么|什么意思|多少|是谁|哪天|今天|现在|股价|价格|定义|解释|when|what|who|price)/i.test(text);
 }
 
-function classifyTask(text = "") {
+function classifyTask(text = "", { forceWebSearch = false } = {}) {
   const media = parseMediaCommand(text);
   if (media?.kind === "video") {
     return {
@@ -1392,7 +1408,7 @@ function classifyTask(text = "") {
       ]
     };
   }
-  if (shouldUseWebSearch(text)) {
+  if (forceWebSearch || shouldUseWebSearch(text)) {
     const deep = isDeepResearch(text);
     return {
       kind: deep ? "research" : "quick_search",
@@ -1400,7 +1416,7 @@ function classifyTask(text = "") {
       title: "OpenAI 联网检索",
       webSearch: true,
       mediaTask: false,
-      rules: [WEB_SOURCE_LINK_RULE]
+      rules: [SEARCH_REQUIRED_RULE, WEB_SOURCE_LINK_RULE]
     };
   }
   if (isQuickFact(text)) {
@@ -2994,6 +3010,7 @@ app.get("/health", (_req, res) => {
     memoryRecallLimit: config.memoryRecallLimit,
     memorySyncMode: "explicit-field:同步记忆库",
     memoryRecallMode: "explicit-field:调取记忆库",
+    webSearchForceMode: "explicit-field:搜索",
     cardMode: "feishu-cardkit-streaming-json-2.0",
     webSearchMode: config.gpt55WebSearchEnabled ? "gpt55-responses-web-search" : "gpt55-responses"
   });
@@ -3598,7 +3615,8 @@ async function processFeishuMessage(payload) {
   let prompt = initialDirectives.cleaned;
   let memoryDirectives = {
     sync: initialDirectives.sync,
-    recall: initialDirectives.recall
+    recall: initialDirectives.recall,
+    webSearch: initialDirectives.webSearch
   };
   let promptFromQuotedMessage = false;
   if (!prompt) {
@@ -3611,7 +3629,8 @@ async function processFeishuMessage(payload) {
     const quotedText = quotedDirectives.cleaned;
     memoryDirectives = {
       sync: memoryDirectives.sync || quotedDirectives.sync,
-      recall: memoryDirectives.recall || quotedDirectives.recall
+      recall: memoryDirectives.recall || quotedDirectives.recall,
+      webSearch: memoryDirectives.webSearch || quotedDirectives.webSearch
     };
     const quotedFileCount = quotedResult.context?.files?.filter((item) => item.path).length || 0;
     if (quotedText) {
@@ -3674,7 +3693,7 @@ async function processFeishuMessage(payload) {
     return;
   }
   pushRouteDecision({ ...baseRouteLog, ignored: false, promptFromQuotedMessage });
-  const task = classifyTask(prompt);
+  const task = classifyTask(prompt, { forceWebSearch: memoryDirectives.webSearch });
   const grokPrompt = task.prompt || prompt;
   const session = chatSessionScope(message);
   const startedAtMs = Date.now();
@@ -3689,6 +3708,7 @@ async function processFeishuMessage(payload) {
     mediaTask: task.mediaTask,
     memorySyncRequested: Boolean(memoryDirectives.sync),
     memoryRecallRequested: Boolean(memoryDirectives.recall),
+    webSearchRequested: Boolean(memoryDirectives.webSearch),
     promptFromQuotedMessage,
     sessionId: session?.sessionId || "",
     sessionScope: session?.scopeKey || "",
