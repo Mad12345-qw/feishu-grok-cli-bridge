@@ -1299,12 +1299,25 @@ function unique(items = []) {
 }
 
 function splitTerms(text = "") {
-  return unique(String(text || "")
+  const normalized = String(text || "").toLowerCase();
+  const baseTerms = normalized
     .replace(/[^\p{L}\p{N}._-]+/gu, " ")
     .split(/\s+/)
     .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length >= 2);
+  const cjkTerms = [];
+  for (const match of normalized.matchAll(/[\p{Script=Han}]{2,}/gu)) {
+    const chunk = match[0];
+    if (chunk.length <= 20) cjkTerms.push(chunk);
+    for (let size = 2; size <= Math.min(6, chunk.length); size += 1) {
+      for (let index = 0; index <= chunk.length - size; index += 1) {
+        cjkTerms.push(chunk.slice(index, index + size));
+      }
+    }
+  }
+  return unique([...baseTerms, ...cjkTerms])
     .filter((item) => item.length >= 2)
-    .slice(0, 24));
+    .slice(0, 48);
 }
 
 function markdownToTextBlocks(markdown = "") {
@@ -1697,7 +1710,7 @@ function buildMemoryContextBlock(memoryItems = []) {
   const items = Array.isArray(memoryItems) ? memoryItems.filter(Boolean) : [];
   if (!items.length) return "";
   return [
-    "Retrieved memory from this bot's own Obsidian/Wiki-synced research notes. Use it only when relevant, and do not assume it is current if the user asks for latest data.",
+    "Retrieved memory from the shared Feishu/Obsidian research knowledge base. Use it only when relevant, and do not assume it is current if the user asks for latest data.",
     ...items.map((item, index) => [
       `Memory ${index + 1}: ${item.title || item.path || "Untitled"}`,
       item.path ? `Path: ${item.path}` : "",
@@ -1829,6 +1842,15 @@ class GitHubFileSync {
       if (error.status === 404) return [];
       throw error;
     }
+  }
+
+  async listMarkdownFiles() {
+    const { owner, repo } = this.splitRepo();
+    const branch = encodeURIComponent(this.branch);
+    const data = await this.request(`/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`);
+    return (data?.tree || [])
+      .filter((item) => item.type === "blob" && /\.md$/i.test(item.path || ""))
+      .map((item) => ({ path: item.path, size: item.size || 0 }));
   }
 
   async putFile(notePath, content, message) {
@@ -2944,17 +2966,17 @@ async function recallObsidianMemory(query = "", limit = config.memoryRecallLimit
   if (!terms.length) return [];
   const indexPath = `${config.obsidianFolder}/index.md`;
   const indexFile = await obsidianSync.getFile(indexPath).catch(() => ({ content: "" }));
-  let paths = obsidianIndexPaths(indexFile.content).slice(-40).reverse();
-  if (!paths.length) {
+  const indexedPaths = obsidianIndexPaths(indexFile.content).slice(-80).reverse();
+  const sharedFiles = await obsidianSync.listMarkdownFiles().catch(async () => {
     const files = await obsidianSync.listFiles(config.obsidianFolder);
-    paths = files
-      .map((item) => `${config.obsidianFolder}/${item.name}`)
-      .filter((item) => /\.md$/i.test(item) && !/\/index\.md$/i.test(item))
-      .slice(-40)
-      .reverse();
-  }
+    return files.map((item) => ({ path: `${config.obsidianFolder}/${item.name}` }));
+  });
+  const sharedPaths = sharedFiles
+    .map((item) => item.path)
+    .filter((item) => /\.md$/i.test(item) && !/(^|\/)index\.md$/i.test(item));
+  const paths = unique([...indexedPaths, ...sharedPaths.reverse()]).slice(0, 160);
   const notes = [];
-  for (const notePath of paths.slice(0, 40)) {
+  for (const notePath of paths.slice(0, 120)) {
     const file = await obsidianSync.getFile(notePath).catch(() => null);
     const content = file?.content || "";
     if (!content) continue;
