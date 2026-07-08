@@ -747,6 +747,12 @@ function grokFooterNote({
     if (memorySyncOk) {
       const targets = [wikiSynced ? "Wiki" : "", obsidianSynced ? "Obsidian" : ""].filter(Boolean).join("+");
       parts.push(targets ? `同步知识库成功 ${targets}` : "同步知识库成功");
+    } else if (wikiSynced || obsidianSynced) {
+      const detail = [
+        obsidianSynced ? "Obsidian成功" : "Obsidian失败",
+        wikiSynced ? "Wiki成功" : "Wiki失败"
+      ].join(" ");
+      parts.push(`同步知识库部分成功 ${detail}`);
     } else {
       parts.push("同步知识库不成功");
     }
