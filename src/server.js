@@ -700,7 +700,7 @@ function grokTextTag(elementId, content, color = "grey") {
   };
 }
 
-function grokHeaderTags(title = "", { webSearch = false, streaming = false, done = false, modeTagColor = "" } = {}) {
+function grokHeaderTags(title = "", { webSearch = false, streaming = false, done = false, modeTagColor = "", memorySync = false, memoryRecall = false } = {}) {
   const mode = grokModeLabel(title, { webSearch });
   const effectiveModeColor = CARD_TEXT_TAG_COLORS.has(modeTagColor)
     ? modeTagColor
@@ -708,6 +708,8 @@ function grokHeaderTags(title = "", { webSearch = false, streaming = false, done
   const tags = [
     grokTextTag("mode_tag", mode, effectiveModeColor)
   ];
+  if (memoryRecall) tags.push(grokTextTag("memory_recall_tag", "调取记忆库", "indigo"));
+  if (memorySync) tags.push(grokTextTag("memory_sync_tag", "同步记忆库", "green"));
   if (streaming) tags.push(grokTextTag("stream_tag", "流式", "turquoise"));
   if (done) tags.push(grokTextTag("done_tag", "完成", "turquoise"));
   if (/视频|媒体|图片|图像|照片|video|image|photo/i.test(`${title}`)) {
@@ -728,7 +730,7 @@ function grokFooterNote({ webSearch = false } = {}) {
   };
 }
 
-function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = false, status = "OpenAI CLI 已接管任务", headerTemplate = "", modeTagColor = "" } = {}) {
+function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = false, status = "OpenAI CLI 已接管任务", headerTemplate = "", modeTagColor = "", memorySync = false, memoryRecall = false } = {}) {
   const media = /视频|媒体|图片|图像|照片|video|image|photo|picture/i.test(`${title}`);
   return {
     schema: "2.0",
@@ -756,7 +758,7 @@ function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = fa
         tag: "plain_text",
         content: grokCardSubtitle({ webSearch, media, streaming: true })
       },
-      text_tag_list: grokHeaderTags(title, { webSearch, streaming: true, modeTagColor })
+      text_tag_list: grokHeaderTags(title, { webSearch, streaming: true, modeTagColor, memorySync, memoryRecall })
     },
     body: {
       direction: "vertical",
@@ -782,7 +784,7 @@ function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = fa
   };
 }
 
-function buildFinalCard(text = "", title = "OpenAI 回复", { webSearch = false, headerTemplate = "", modeTagColor = "" } = {}) {
+function buildFinalCard(text = "", title = "OpenAI 回复", { webSearch = false, headerTemplate = "", modeTagColor = "", memorySync = false, memoryRecall = false } = {}) {
   const safe = sanitizeFeishuText(text);
   const media = /视频|媒体|图片|图像|照片|video|image|photo|picture/i.test(`${title}\n${safe}`);
   const elements = [
@@ -815,7 +817,7 @@ function buildFinalCard(text = "", title = "OpenAI 回复", { webSearch = false,
         tag: "plain_text",
         content: grokCardSubtitle({ webSearch, media, streaming: false })
       },
-      text_tag_list: grokHeaderTags(title, { webSearch, done: true, modeTagColor })
+      text_tag_list: grokHeaderTags(title, { webSearch, done: true, modeTagColor, memorySync, memoryRecall })
     },
     body: {
       direction: "vertical",
@@ -2215,7 +2217,7 @@ async function answerWithGrok(prompt) {
   return callGrokCli(prompt);
 }
 
-function createCardKitStreamingUpdater({ feishu, cardId, title, webSearch }) {
+function createCardKitStreamingUpdater({ feishu, cardId, title, webSearch, memorySync = false, memoryRecall = false }) {
   let sequence = 0;
   let lastAnswerAt = 0;
   let lastStatusAt = 0;
@@ -2269,7 +2271,7 @@ function createCardKitStreamingUpdater({ feishu, cardId, title, webSearch }) {
       await queue;
       await patchAnswer(latestAnswer, true);
       await queue;
-      await feishu.updateCard(cardId, buildFinalCard(latestAnswer, title, { webSearch }), nextSequence());
+      await feishu.updateCard(cardId, buildFinalCard(latestAnswer, title, { webSearch, memorySync, memoryRecall }), nextSequence());
       await queue;
     },
     fail: async (errorText) => {
@@ -3714,7 +3716,9 @@ async function processFeishuMessage(payload) {
       title,
       {
         webSearch: job.webSearch,
-        status: job.webSearch ? "正在调用 GPT5.5 联网搜索" : "正在调用 GPT5.5"
+        status: job.webSearch ? "正在调用 GPT5.5 联网搜索" : "正在调用 GPT5.5",
+        memorySync: memoryDirectives.sync,
+        memoryRecall: memoryDirectives.recall
       }
     );
     markTiming("streamingCardReadyMs");
@@ -3724,7 +3728,9 @@ async function processFeishuMessage(payload) {
       feishu,
       cardId: streamingCard.cardId,
       title,
-      webSearch: job.webSearch
+      webSearch: job.webSearch,
+      memorySync: memoryDirectives.sync,
+      memoryRecall: memoryDirectives.recall
     });
     const quotedResult = await quotedContextPromise;
     if (quotedResult.error) throw quotedResult.error;
