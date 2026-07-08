@@ -23,9 +23,13 @@ const config = {
     process.env.FEISHU_RESEARCH_REPORT_PARENT_WIKI_TOKEN ||
     process.env.FEISHU_INVESTMENT_REPORT_PARENT_WIKI_TOKEN ||
     "",
-  mikotoBaseUrl: process.env.MIKOTO_BASE_URL || "",
-  mikotoApiKey: process.env.MIKOTO_API_KEY || "",
-  mikotoModel: process.env.MIKOTO_MODEL || "gpt-5.5",
+  mikotoBaseUrl: process.env.MIKOTO_BASE_URL || process.env.KIMI_BASE_URL || "",
+  mikotoApiKey: process.env.MIKOTO_API_KEY || process.env.KIMI_API_KEY || "",
+  mikotoModel: process.env.MIKOTO_MODEL || process.env.KIMI_MODEL || "gpt-5.5",
+  mikotoWebSearchEnabled: parseBool(
+    process.env.MIKOTO_WEB_SEARCH_ENABLED || process.env.KIMI_WEB_SEARCH_ENABLED,
+    /kimi/i.test(process.env.MIKOTO_MODEL || process.env.KIMI_MODEL || "")
+  ),
   databaseUrl: process.env.DATABASE_URL || "",
   dbSsl: parseBool(process.env.DB_SSL, false),
   obsidianSyncEnabled: parseBool(process.env.OBSIDIAN_SYNC_ENABLED, Boolean(process.env.OBSIDIAN_GITHUB_TOKEN || process.env.GITHUB_BACKUP_TOKEN)),
@@ -64,6 +68,7 @@ app.get("/health", (_req, res) => {
     startedAt: STARTED_AT.toISOString(),
     uptimeSeconds: Math.round(process.uptime()),
     model: config.mikotoModel,
+    webSearchEnabled: Boolean(config.mikotoWebSearchEnabled),
     feishuConfigured: Boolean(config.feishuAppId && config.feishuAppSecret),
     wikiConfigured: Boolean(config.feishuResearchParentWikiToken),
     obsidianConfigured: Boolean(config.obsidianSyncEnabled && obsidian.enabled),
@@ -79,6 +84,7 @@ app.get("/debug/status", requireDebugToken, (_req, res) => {
     jobs: [...jobs.values()].slice(-50),
     env: {
       model: config.mikotoModel,
+      webSearchEnabled: Boolean(config.mikotoWebSearchEnabled),
       feishuConfigured: Boolean(config.feishuAppId && config.feishuAppSecret),
       wikiConfigured: Boolean(config.feishuResearchParentWikiToken),
       obsidianConfigured: Boolean(config.obsidianSyncEnabled && obsidian.enabled),
@@ -92,12 +98,12 @@ app.get("/debug/status", requireDebugToken, (_req, res) => {
 
 app.get("/debug/test-model", requireDebugToken, async (req, res) => {
   try {
-    const prompt = String(req.query.prompt || "用一句中文回答：GPT5.5 投研机器人已就绪。").slice(0, 1000);
-    const answer = await callModel([
+    const prompt = String(req.query.prompt || "用一句中文回答：投研桥机器人已就绪。").slice(0, 1000);
+    const result = await callModel([
       { role: "system", content: "You are a concise Chinese assistant." },
       { role: "user", content: prompt }
     ], { maxTokens: 800 });
-    res.json({ ok: true, answer });
+    res.json({ ok: true, answer: result.content, usage: result.usage, webSearchCalls: result.webSearchCalls });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -284,7 +290,7 @@ async function processFeishuMessage(payload) {
     job.status = "failed";
     job.error = error.message;
     job.completedAt = new Date().toISOString();
-    await feishu.replyText(messageId, `GPT5.5 投研机器人执行失败：${error.message}`);
+    await feishu.replyText(messageId, `投研桥机器人执行失败：${error.message}`);
   }
 }
 
@@ -306,16 +312,18 @@ async function runResearch(prompt, { quotedText = "", related = [] } = {}) {
     ? `User quoted or replied to this context:\n${truncate(quotedText, 4000)}`
     : "No quoted context.";
 
-  return callModel([
+  const result = await callModel([
     {
       role: "system",
       content: [
-        "你是一个面向买方投研的中文投资研究助手。",
-        "你不调用外部 CLI，也不假装自己执行了不存在的工具。",
-        "你的任务是基于用户问题、引用内容和已有内部记忆，给出可复核的行业/公司研究判断。",
-        "输出要包括：核心结论、关键证据、反方观点、需要继续验证的数据、后续跟踪节点。",
-        "如果缺少实时行情或财务数据，要明确写出缺口，不要编造数字。",
-        "当用户引用另一个机器人的答案时，要先提炼它的论点，再指出同意、保留和需要验证的地方。"
+        "You are a Chinese-language buy-side investment research assistant.",
+        "Do not claim that you ran a CLI or a market-data tool unless one actually exists in this service.",
+        "When web search is enabled, use the Kimi builtin $web_search tool for companies, industries, macro, news, policy, filings, prices, valuation, financials, and cross-checking public evidence.",
+        "Base the answer on the user request, quoted context, internal memory, and public sources retrieved by web search.",
+        "The output must include: core conclusion, key evidence, counter-view, data still requiring verification, and follow-up watchpoints.",
+        "If real-time market or financial data is missing, state the gap clearly and do not invent numbers.",
+        "When the user quotes another bot answer, first extract its thesis, then mark agreement, reservations, and what still needs verification.",
+        "Answer in Chinese. End with a short note covering whether web search was enabled, how many internal-memory hits were used, and the main source URLs or evidence gaps."
       ].join("\n")
     },
     {
@@ -331,13 +339,65 @@ async function runResearch(prompt, { quotedText = "", related = [] } = {}) {
       ].join("\n")
     }
   ], { maxTokens: MAX_MODEL_TOKENS });
+  return result.content;
 }
 
 async function callModel(messages, { maxTokens = MAX_MODEL_TOKENS } = {}) {
   if (!config.mikotoBaseUrl || !config.mikotoApiKey || !config.mikotoModel) {
     throw new Error("MIKOTO_BASE_URL, MIKOTO_API_KEY, and MIKOTO_MODEL are required.");
   }
+
+  const modelMessages = messages.map((item) => ({ ...item }));
+  const tools = config.mikotoWebSearchEnabled
+    ? [{ type: "builtin_function", function: { name: "$web_search" } }]
+    : undefined;
+  let usage = null;
+  let webSearchCalls = 0;
+  let lastFinishReason = "";
+
+  for (let turn = 0; turn < 8; turn += 1) {
+    const data = await callChatCompletion(modelMessages, { maxTokens, tools });
+    usage = data.usage || usage;
+    const choice = data?.choices?.[0] || {};
+    const message = choice.message || {};
+    lastFinishReason = choice.finish_reason || "";
+    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+    if (toolCalls.length) {
+      webSearchCalls += toolCalls.filter((tool) => tool?.function?.name === "$web_search").length;
+      modelMessages.push(message);
+      for (const tool of toolCalls) {
+        modelMessages.push({
+          role: "tool",
+          tool_call_id: tool.id,
+          name: tool?.function?.name || "$web_search",
+          content: tool?.function?.arguments || ""
+        });
+      }
+      continue;
+    }
+
+    const content = message.content || choice.text || data?.output_text || data?.text || "";
+    if (!content) {
+      throw new Error(`Model API returned no text; finish_reason=${lastFinishReason || "unknown"}.`);
+    }
+    return { content: String(content).trim(), usage, webSearchCalls };
+  }
+
+  throw new Error(`Model API web search tool loop did not finish after 8 turns; finish_reason=${lastFinishReason || "unknown"}.`);
+}
+
+async function callChatCompletion(messages, { maxTokens = MAX_MODEL_TOKENS, tools } = {}) {
   const url = chatCompletionsUrl(config.mikotoBaseUrl);
+  const body = {
+    model: config.mikotoModel,
+    messages,
+    temperature: 0.35,
+    max_tokens: maxTokens
+  };
+  if (tools?.length) body.tools = tools;
+  if (/kimi/i.test(config.mikotoModel)) body.thinking = { type: "disabled" };
+
   const response = await fetch(url, {
     method: "POST",
     signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
@@ -345,35 +405,18 @@ async function callModel(messages, { maxTokens = MAX_MODEL_TOKENS } = {}) {
       Authorization: `Bearer ${config.mikotoApiKey}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      model: config.mikotoModel,
-      messages,
-      temperature: 0.35,
-      max_tokens: maxTokens
-    })
+    body: JSON.stringify(body)
   });
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`Model API ${response.status}: ${truncate(text, 800)}`);
   }
-  let data;
   try {
-    data = JSON.parse(text);
+    return JSON.parse(text);
   } catch {
     throw new Error(`Model API returned non-JSON: ${truncate(text, 500)}`);
   }
-  const content =
-    data?.choices?.[0]?.message?.content ||
-    data?.choices?.[0]?.text ||
-    data?.output_text ||
-    data?.text ||
-    "";
-  if (!content) {
-    throw new Error(`Model API returned no text: ${truncate(JSON.stringify(data), 800)}`);
-  }
-  return String(content).trim();
 }
-
 async function maybeCreateWikiDocument(title, markdown) {
   if (!config.feishuResearchParentWikiToken) return { created: false, reason: "missing_parent_wiki_token" };
   return feishu.createWikiDocument({
@@ -390,8 +433,8 @@ async function maybeSyncObsidian(title, markdown) {
   const slug = slugify(title).slice(0, 80) || "research";
   const path = `${config.obsidianFolder}/${date}-${slug}.md`;
   const indexPath = `${config.obsidianFolder}/index.md`;
-  await obsidian.putFile(path, markdown, `Add GPT5.5 research note: ${title.slice(0, 60)}`);
-  await obsidian.appendUnique(indexPath, `- ${date} [[${path.replace(/\.md$/i, "")}|${title}]]`, `Index GPT5.5 research note`);
+  await obsidian.putFile(path, markdown, `Add research bridge note: ${title.slice(0, 60)}`);
+  await obsidian.appendUnique(indexPath, `- ${date} [[${path.replace(/\.md$/i, "")}|${title}]]`, `Index research bridge note`);
   return { synced: true, path, repo: config.obsidianGithubRepo, branch: config.obsidianGithubBranch };
 }
 
@@ -402,13 +445,14 @@ function buildResearchMarkdown({ title, prompt, answer, quotedText, related, mes
     : "- none";
   return [
     "---",
-    "source_type: gpt55_research_bot",
+    "source_type: research_bridge_bot",
     `generated_at: ${now}`,
     `model: ${config.mikotoModel}`,
+    `web_search_enabled: ${config.mikotoWebSearchEnabled ? "true" : "false"}`,
     `feishu_message_id: ${messageId}`,
     "tags:",
     "  - investment-research",
-    "  - gpt55",
+    "  - research-bridge",
     "---",
     "",
     `# ${title}`,
@@ -436,7 +480,7 @@ function buildSyncFooter(doc, obsidianResult) {
 function researchTitle(prompt, answer) {
   const firstHeading = String(answer || "").match(/^#\s+(.+)$/m)?.[1];
   if (firstHeading) return firstHeading.slice(0, 80);
-  return cleanupPrompt(prompt).split(/\r?\n/)[0].slice(0, 80) || "GPT5.5 投研记录";
+  return cleanupPrompt(prompt).split(/\r?\n/)[0].slice(0, 80) || "投研桥记录";
 }
 
 class FeishuClient {
@@ -548,7 +592,7 @@ class FeishuClient {
         obj_type: "docx",
         node_type: "origin",
         parent_node_token: parentNodeToken,
-        title: String(title || "GPT5.5 投研记录").slice(0, 800)
+        title: String(title || "投研桥记录").slice(0, 800)
       }
     });
     const node = data.node || {};

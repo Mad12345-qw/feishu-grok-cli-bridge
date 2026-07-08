@@ -16,7 +16,9 @@ services:
       - key: MIKOTO_API_KEY
         sync: false
       - key: MIKOTO_MODEL
-        value: gpt-5.5
+        value: evomap-kimi-k2.6
+      - key: MIKOTO_WEB_SEARCH_ENABLED
+        value: "true"
       - key: MODEL_TIMEOUT_MS
         value: "300000"
       - key: MODEL_MAX_TOKENS
@@ -50,6 +52,6 @@ services:
       - key: OBSIDIAN_GITHUB_BRANCH
         value: main
       - key: OBSIDIAN_RESEARCH_FOLDER
-        value: gpt55-research
+        value: research-bridge
       - key: DEBUG_TOKEN
         sync: false

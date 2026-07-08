@@ -1,12 +1,13 @@
-# Feishu GPT5.5 Research Bridge
+# Feishu Research Bridge
 
-Lightweight Feishu investment-research bot backed by an OpenAI-compatible GPT5.5 endpoint.
+Lightweight Feishu investment-research bot backed by an OpenAI-compatible endpoint. It can use Kimi K2.6 with the builtin `$web_search` tool while keeping the original Render service name and Feishu callback URL.
 
 ## Scope
 
 - Receives Feishu bot mentions and direct messages.
 - Adds a Feishu reaction immediately as a best-effort acknowledgement.
 - Calls `MIKOTO_BASE_URL` with `MIKOTO_MODEL`.
+- Uses Kimi builtin `$web_search` when `MIKOTO_WEB_SEARCH_ENABLED=true`.
 - Replies with a structured Chinese investment-research answer.
 - Can read quoted Feishu message text for simple cross-validation workflows.
 - Optionally writes final notes to a Feishu Wiki folder.
@@ -46,7 +47,8 @@ https://your-render-service.onrender.com/feishu/events
 ```env
 MIKOTO_BASE_URL=
 MIKOTO_API_KEY=
-MIKOTO_MODEL=gpt-5.5
+MIKOTO_MODEL=evomap-kimi-k2.6
+MIKOTO_WEB_SEARCH_ENABLED=true
 
 FEISHU_APP_ID=
 FEISHU_APP_SECRET=
@@ -66,7 +68,7 @@ OBSIDIAN_SYNC_ENABLED=true
 OBSIDIAN_GITHUB_TOKEN=
 OBSIDIAN_GITHUB_REPO=Mad12345-qw/obsidian-knowledge-sync
 OBSIDIAN_GITHUB_BRANCH=main
-OBSIDIAN_RESEARCH_FOLDER=gpt55-research
+OBSIDIAN_RESEARCH_FOLDER=research-bridge
 ```
 
 ## Debug
