@@ -11,20 +11,54 @@ services:
         value: 20
       - key: SERVICE_NAME
         value: feishu-gpt55-research-bridge
-      - key: MIKOTO_BASE_URL
+      - key: GPT55_BASE_URL
         sync: false
-      - key: MIKOTO_API_KEY
+      - key: GPT55_API_KEY
         sync: false
-      - key: MIKOTO_MODEL
-        value: evomap-kimi-k2.6
-      - key: MIKOTO_WEB_SEARCH_ENABLED
+      - key: GPT55_MODEL
+        value: gpt-5.5
+      - key: GPT55_WEB_SEARCH_ENABLED
         value: "true"
-      - key: MODEL_TIMEOUT_MS
-        value: "300000"
-      - key: MODEL_MAX_TOKENS
-        value: "6000"
+      - key: GROK_CLI_ENABLED
+        value: "false"
+      - key: GROK_CLI_TIMEOUT_MS
+        value: "540000"
+      - key: GROK_CLI_COMMAND
+        value: /opt/render/project/src/.grok/bin/grok
+      - key: GROK_CLI_CWD
+        value: /tmp/grok-feishu-bridge-cwd
+      - key: GROK_MEDIA_MAX_TURNS
+        value: "10"
+      - key: GROK_VIDEO_MAX_TURNS
+        value: "10"
+      - key: GROK_VIDEO_MODEL
+        value: grok-build
+      - key: GROK_MEMORY_ENABLED
+        value: "true"
+      - key: GROK_STATE_SYNC_ENABLED
+        value: "true"
+      - key: GROK_AUTH_SYNC_ENABLED
+        value: "true"
+      - key: GROK_AUTH_REDIS_KEY
+        value: feishu-grok-bridge:grok-auth
+      - key: GROK_STATE_REDIS_KEY
+        value: feishu-grok-bridge:grok-state
+      - key: GROK_REMOTE_STATE_SSH_PORT
+        value: "22"
+      - key: GROK_REMOTE_STATE_SSH_USER
+        value: root
+      - key: GROK_REMOTE_STATE_DIR
+        value: /opt/grok-state-backups/feishu-grok-bridge
+      - key: GROK_CLI_ARGS_JSON
+        value: '["--no-auto-update","--always-approve","--permission-mode","bypassPermissions","--max-turns","10","--cwd","{{cwd}}","--output-format","streaming-json","-p","{{prompt}}"]'
+      - key: MAX_CARD_CONTENT_CHARS
+        value: "90000"
       - key: MAX_REPLY_CHARS
         value: "3500"
+      - key: MAX_IMAGE_BYTES
+        value: "10485760"
+      - key: MAX_VIDEO_BYTES
+        value: "31457280"
       - key: FEISHU_APP_ID
         sync: false
       - key: FEISHU_APP_SECRET
@@ -33,25 +67,19 @@ services:
         sync: false
       - key: FEISHU_ENCRYPT_KEY
         sync: false
-      - key: FEISHU_ACK_REACTION
-        value: OneSecond
-      - key: FEISHU_DONE_REACTION
-        value: Done
-      - key: FEISHU_RESEARCH_REPORT_PARENT_WIKI_TOKEN
+      - key: GROK_DEPLOYMENT_KEY
         sync: false
-      - key: DATABASE_URL
+      - key: GROK_AUTH_JSON_B64
         sync: false
-      - key: DB_SSL
-        value: "false"
-      - key: OBSIDIAN_SYNC_ENABLED
-        value: "true"
-      - key: OBSIDIAN_GITHUB_TOKEN
+      - key: UPSTASH_REDIS_REST_URL
         sync: false
-      - key: OBSIDIAN_GITHUB_REPO
-        value: Mad12345-qw/obsidian-knowledge-sync
-      - key: OBSIDIAN_GITHUB_BRANCH
-        value: main
-      - key: OBSIDIAN_RESEARCH_FOLDER
-        value: research-bridge
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: AUTH_ENCRYPTION_KEY
+        sync: false
+      - key: GROK_REMOTE_STATE_SSH_HOST
+        sync: false
+      - key: GROK_REMOTE_STATE_SSH_PASSWORD
+        sync: false
       - key: DEBUG_TOKEN
         sync: false
