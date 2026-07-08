@@ -82,10 +82,20 @@ const config = {
   feishuAppSecret: process.env.FEISHU_APP_SECRET || "",
   feishuVerificationToken: process.env.FEISHU_VERIFICATION_TOKEN || "",
   feishuEncryptKey: process.env.FEISHU_ENCRYPT_KEY || "",
+  feishuDocBaseUrl: process.env.FEISHU_DOC_BASE_URL || "https://www.feishu.cn",
+  feishuResearchParentWikiToken:
+    process.env.FEISHU_RESEARCH_REPORT_PARENT_WIKI_TOKEN ||
+    process.env.FEISHU_INVESTMENT_REPORT_PARENT_WIKI_TOKEN ||
+    "",
   gpt55BaseUrl: process.env.GPT55_BASE_URL || process.env.MIKOTO_BASE_URL || "",
   gpt55ApiKey: process.env.GPT55_API_KEY || process.env.MIKOTO_API_KEY || "",
   gpt55Model: process.env.GPT55_MODEL || process.env.MIKOTO_MODEL || "gpt-5.5",
   gpt55WebSearchEnabled: envFlag("GPT55_WEB_SEARCH_ENABLED", true),
+  obsidianSyncEnabled: envFlag("OBSIDIAN_SYNC_ENABLED", Boolean(process.env.OBSIDIAN_GITHUB_TOKEN || process.env.GITHUB_BACKUP_TOKEN)),
+  obsidianGithubToken: process.env.OBSIDIAN_GITHUB_TOKEN || process.env.GITHUB_BACKUP_TOKEN || "",
+  obsidianGithubRepo: process.env.OBSIDIAN_GITHUB_REPO || "Mad12345-qw/obsidian-knowledge-sync",
+  obsidianGithubBranch: process.env.OBSIDIAN_GITHUB_BRANCH || "main",
+  obsidianFolder: stripSlashes(process.env.OBSIDIAN_RESEARCH_FOLDER || "gpt55-research"),
   grokCliEnabled: envFlag("GROK_CLI_ENABLED", true),
   grokCliCommand: process.env.GROK_CLI_COMMAND || path.join(process.cwd(), ".grok", "bin", GROK_EXECUTABLE_NAME),
   grokCliCwd: process.env.GROK_CLI_CWD || path.join(os.tmpdir(), "grok-feishu-bridge-cwd"),
@@ -1200,6 +1210,52 @@ function safeName(value = "") {
   return String(value || "file").replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120) || "file";
 }
 
+function truncate(value = "", max = 500) {
+  const text = String(value || "");
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function normalizeRepo(value = "") {
+  const clean = String(value || "").trim().replace(/^https:\/\/github\.com\//i, "").replace(/\.git$/i, "");
+  const parts = clean.split("/").filter(Boolean);
+  return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : "";
+}
+
+function encodeGitHubPath(value = "") {
+  return String(value || "").split("/").filter(Boolean).map(encodeURIComponent).join("/");
+}
+
+function stripSlashes(value = "") {
+  return String(value || "").replace(/^[/\\]+|[/\\]+$/g, "") || "gpt55-research";
+}
+
+function slugify(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "research";
+}
+
+function markdownToTextBlocks(markdown = "") {
+  return String(markdown || "")
+    .split(/\r?\n/)
+    .map((line) => String(line || "").trim())
+    .filter(Boolean)
+    .map((line) => ({
+      block_type: 2,
+      text: {
+        elements: [
+          {
+            text_run: {
+              content: line.replace(/^#{1,6}\s+/, "").slice(0, 4000)
+            }
+          }
+        ],
+        style: {}
+      }
+    }));
+}
+
 function extFromContentType(contentType = "", fallback = ".bin") {
   const clean = String(contentType || "").toLowerCase();
   if (clean.includes("png")) return ".png";
@@ -1506,6 +1562,99 @@ function describeGrokEvent(event = {}) {
   if (text.includes("end") || text.includes("completed")) return "正在整理最终回答";
   if (text.includes("error") || text.includes("failed")) return "模型返回运行事件，正在等待最终结果";
   return "";
+}
+
+class GitHubFileSync {
+  constructor({ token = "", repo = "", branch = "main", timeoutMs = 30000 } = {}) {
+    this.token = token;
+    this.repo = normalizeRepo(repo);
+    this.branch = branch || "main";
+    this.timeoutMs = Number(timeoutMs) || 30000;
+  }
+
+  get enabled() {
+    return Boolean(this.token && this.repo);
+  }
+
+  splitRepo() {
+    const [owner, repo] = this.repo.split("/");
+    if (!owner || !repo) throw new Error("GitHub repo must use owner/repo format.");
+    return { owner, repo };
+  }
+
+  async request(requestPath, options = {}) {
+    if (!this.enabled) throw new Error("GitHub file sync is not configured.");
+    let response;
+    try {
+      response = await fetch(`https://api.github.com${requestPath}`, {
+        ...options,
+        signal: options.signal || AbortSignal.timeout(this.timeoutMs),
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+          ...(options.headers || {})
+        }
+      });
+    } catch (error) {
+      if (error?.name === "AbortError" || error?.name === "TimeoutError") {
+        throw new Error(`GitHub API timed out after ${this.timeoutMs}ms: ${requestPath}`);
+      }
+      throw error;
+    }
+    const text = await response.text();
+    if (!response.ok) {
+      const syncError = new Error(`GitHub API ${response.status}: ${truncate(text, 500)}`);
+      syncError.status = response.status;
+      throw syncError;
+    }
+    return text ? JSON.parse(text) : null;
+  }
+
+  async getFile(notePath) {
+    const { owner, repo } = this.splitRepo();
+    const branch = encodeURIComponent(this.branch);
+    try {
+      const file = await this.request(`/repos/${owner}/${repo}/contents/${encodeGitHubPath(notePath)}?ref=${branch}`);
+      return {
+        sha: file.sha || "",
+        content: Buffer.from(file.content || "", "base64").toString("utf8")
+      };
+    } catch (error) {
+      if (error.status === 404) return { sha: "", content: "" };
+      throw error;
+    }
+  }
+
+  async putFile(notePath, content, message) {
+    const { owner, repo } = this.splitRepo();
+    const remote = await this.getFile(notePath);
+    if (remote.content === String(content || "")) {
+      return { path: notePath, sha: remote.sha, changed: false };
+    }
+    const body = {
+      message: message || `Update ${notePath}`,
+      content: Buffer.from(String(content || ""), "utf8").toString("base64"),
+      branch: this.branch
+    };
+    if (remote.sha) body.sha = remote.sha;
+    const result = await this.request(`/repos/${owner}/${repo}/contents/${encodeGitHubPath(notePath)}`, {
+      method: "PUT",
+      body: JSON.stringify(body)
+    });
+    return { path: notePath, sha: result?.content?.sha || "", changed: true };
+  }
+
+  async appendUnique(notePath, block, message) {
+    const remote = await this.getFile(notePath);
+    const current = String(remote.content || "").trimEnd();
+    const nextBlock = String(block || "").trim();
+    if (!nextBlock) return { path: notePath, sha: remote.sha, changed: false };
+    if (current.includes(nextBlock)) return { path: notePath, sha: remote.sha, changed: false };
+    const next = current ? `${current}\n\n${nextBlock}\n` : `${nextBlock}\n`;
+    return this.putFile(notePath, next, message);
+  }
 }
 
 async function callGrokCli(prompt, { onText, onEvent, maxTurns, model = "", quotedContext = null, taskRules = [], timeoutMs, session = null, memoryEnabled = config.grokMemoryEnabled } = {}) {
@@ -2104,6 +2253,51 @@ class FeishuClient {
     return item && typeof item === "object" ? item : null;
   }
 
+  async getWikiNode(token, objType = "wiki") {
+    if (!token) throw new Error("Missing Feishu wiki token.");
+    const params = new URLSearchParams({ token: String(token || "") });
+    if (objType) params.set("obj_type", objType);
+    const data = await this.get(`/open-apis/wiki/v2/spaces/get_node?${params.toString()}`);
+    return data?.data?.node || data?.node || {};
+  }
+
+  async createWikiDocument({ parentWikiToken, title, markdown }) {
+    if (!parentWikiToken) throw new Error("Missing Feishu parent wiki token.");
+    const parent = await this.getWikiNode(parentWikiToken, "wiki");
+    const spaceId = parent.space_id || "";
+    const parentNodeToken = parent.node_token || parent.wiki_token || parentWikiToken;
+    if (!spaceId || !parentNodeToken) {
+      throw new Error(`Feishu parent wiki node missing space_id/node_token: ${truncate(JSON.stringify(parent), 500)}`);
+    }
+    const data = await this.post(`/open-apis/wiki/v2/spaces/${encodeURIComponent(spaceId)}/nodes`, {
+      obj_type: "docx",
+      node_type: "origin",
+      parent_node_token: parentNodeToken,
+      title: String(title || "OpenAI research note").slice(0, 800)
+    });
+    const node = data?.data?.node || data?.node || {};
+    const documentId = node.obj_token || "";
+    const wikiToken = node.node_token || node.wiki_token || "";
+    if (!documentId) throw new Error(`Feishu wiki node response missing obj_token: ${truncate(JSON.stringify(data), 500)}`);
+    await this.insertPlainMarkdown(documentId, markdown);
+    return {
+      created: true,
+      token: documentId,
+      wikiToken,
+      url: node.url || (wikiToken ? `${config.feishuDocBaseUrl}/wiki/${wikiToken}` : `${config.feishuDocBaseUrl}/docx/${documentId}`)
+    };
+  }
+
+  async insertPlainMarkdown(documentId, markdown) {
+    const children = markdownToTextBlocks(markdown).slice(0, 500);
+    for (let start = 0; start < children.length; start += 20) {
+      const chunk = children.slice(start, start + 20);
+      await this.post(`/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(documentId)}/children`, {
+        children: chunk
+      });
+    }
+  }
+
   async downloadMessageResource(messageId, resource) {
     const type = resource.type === "image" ? "image" : "file";
     const baseName = safeName(resource.name || resource.key);
@@ -2442,6 +2636,89 @@ function splitReply(text, maxChars) {
   return chunks;
 }
 
+function researchNoteTitle(prompt = "", fallback = "OpenAI research note") {
+  const first = String(prompt || "").split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  return (first || fallback || "OpenAI research note").slice(0, 80);
+}
+
+function buildResearchMarkdown({ title, prompt, answer, quotedContext, messageId }) {
+  const quotedText = String(quotedContext?.text || "").trim();
+  return [
+    "---",
+    "source_type: openai_feishu_research_bot",
+    `generated_at: ${new Date().toISOString()}`,
+    `model: ${config.gpt55Model}`,
+    `web_search_enabled: ${config.gpt55WebSearchEnabled ? "true" : "false"}`,
+    `feishu_message_id: ${messageId || ""}`,
+    "tags:",
+    "  - investment-research",
+    "  - openai",
+    "---",
+    "",
+    `# ${title}`,
+    "",
+    "## User Request",
+    String(prompt || "").trim(),
+    "",
+    quotedText ? `## Quoted Context\n${quotedText}` : "",
+    "",
+    "## Research Output",
+    String(answer || "").trim()
+  ].filter(Boolean).join("\n").trim() + "\n";
+}
+
+async function maybeCreateWikiDocument(title, markdown) {
+  if (!config.feishuResearchParentWikiToken) return { created: false, reason: "missing_parent_wiki_token" };
+  return feishu.createWikiDocument({
+    parentWikiToken: config.feishuResearchParentWikiToken,
+    title,
+    markdown
+  });
+}
+
+async function maybeSyncObsidian(title, markdown) {
+  if (!config.obsidianSyncEnabled) return { synced: false, reason: "disabled" };
+  if (!obsidianSync.enabled) return { synced: false, reason: "missing_github_config" };
+  const date = new Date().toISOString().slice(0, 10);
+  const slug = slugify(title).slice(0, 80) || "research";
+  const notePath = `${config.obsidianFolder}/${date}-${slug}.md`;
+  const indexPath = `${config.obsidianFolder}/index.md`;
+  await obsidianSync.putFile(notePath, markdown, `Add OpenAI research note: ${title.slice(0, 60)}`);
+  await obsidianSync.appendUnique(indexPath, `- ${date} [[${notePath.replace(/\.md$/i, "")}|${title}]]`, "Index OpenAI research note");
+  return { synced: true, path: notePath, repo: config.obsidianGithubRepo, branch: config.obsidianGithubBranch };
+}
+
+function buildSyncFooter(doc, obsidianResult) {
+  const lines = [];
+  if (doc?.url) lines.push(`Feishu Wiki: ${doc.url}`);
+  if (obsidianResult?.path) lines.push(`Obsidian: ${obsidianResult.path}`);
+  return lines.length ? lines.join("\n") : "";
+}
+
+async function syncResearchArtifacts({ prompt, answer, title, quotedContext, messageId, job }) {
+  const markdown = buildResearchMarkdown({ title, prompt, answer, quotedContext, messageId });
+  const doc = await maybeCreateWikiDocument(title, markdown).catch((error) => {
+    if (job) job.wikiError = error.message;
+    console.warn(`Feishu Wiki sync failed: ${error.message}`);
+    return null;
+  });
+  const obsidianResult = await maybeSyncObsidian(title, markdown).catch((error) => {
+    if (job) job.obsidianError = error.message;
+    console.warn(`Obsidian sync failed: ${error.message}`);
+    return null;
+  });
+  if (job) {
+    job.feishuDocUrl = doc?.url || "";
+    job.obsidianPath = obsidianResult?.path || "";
+  }
+  return { doc, obsidianResult, footer: buildSyncFooter(doc, obsidianResult) };
+}
+
+function appendSyncFooter(answer, syncResult) {
+  const footer = String(syncResult?.footer || "").trim();
+  return footer ? `${String(answer || "").trim()}\n\n---\n${footer}` : String(answer || "");
+}
+
 function decryptIfNeeded(payload) {
   if (!payload?.encrypt) return payload;
   if (!config.feishuEncryptKey) {
@@ -2470,6 +2747,11 @@ function validFeishuToken(payload) {
 
 const app = express();
 const feishu = new FeishuClient();
+const obsidianSync = new GitHubFileSync({
+  token: config.obsidianGithubToken,
+  repo: config.obsidianGithubRepo,
+  branch: config.obsidianGithubBranch
+});
 const seenMessageIds = new Map();
 const jobs = new Map();
 let latestPrivateMessage = null;
@@ -2503,6 +2785,8 @@ app.get("/health", (_req, res) => {
     uptimeSeconds: Math.round(process.uptime()),
     cwd: process.cwd(),
     feishuConfigured: feishu.enabled,
+    wikiConfigured: Boolean(config.feishuResearchParentWikiToken),
+    obsidianConfigured: Boolean(config.obsidianSyncEnabled && obsidianSync.enabled),
     grokCliEnabled: config.grokCliEnabled,
     gpt55Configured: Boolean(config.gpt55BaseUrl && config.gpt55ApiKey && config.gpt55Model),
     gpt55WebSearchEnabled: config.gpt55WebSearchEnabled,
@@ -3216,6 +3500,7 @@ async function processFeishuMessage(payload) {
   const title = task.title;
   let updater = null;
   let quotedTempFiles = [];
+  let quotedContext = null;
   try {
     const streamingCard = await feishu.replyStreamingCard(
       messageId,
@@ -3237,7 +3522,7 @@ async function processFeishuMessage(payload) {
     });
     const quotedResult = await quotedContextPromise;
     if (quotedResult.error) throw quotedResult.error;
-    const quotedContext = quotedResult.context;
+    quotedContext = quotedResult.context;
     quotedTempFiles = quotedContext?.files?.map((item) => item.path).filter(Boolean) || [];
     job.quotedMessageId = quotedContext?.messageId || "";
     job.quotedFileCount = quotedContext?.files?.filter((item) => item.path).length || 0;
@@ -3270,6 +3555,14 @@ async function processFeishuMessage(payload) {
     const imagePaths = extractLocalImagePaths(answer);
     const videoPaths = extractLocalVideoPaths(answer);
     const answerWithoutMediaPaths = stripLocalMediaPaths(answer);
+    const syncResult = await syncResearchArtifacts({
+      prompt,
+      answer: answerWithoutMediaPaths || answer,
+      title: researchNoteTitle(prompt, title),
+      quotedContext,
+      messageId,
+      job
+    });
     job.status = "completed";
     job.completedAt = new Date().toISOString();
     if (imagePaths.length || videoPaths.length) {
@@ -3286,9 +3579,9 @@ async function processFeishuMessage(payload) {
       const finalText = answerWithoutMediaPaths
         ? `${answerWithoutMediaPaths}\n\n已发送 ${sentSummary}。`
         : `媒体已生成，已发送 ${sentSummary}。`;
-      await updater.patchAnswer(finalText, true);
+      await updater.patchAnswer(appendSyncFooter(finalText, syncResult), true);
     } else {
-      await updater.patchAnswer(answer, true);
+      await updater.patchAnswer(appendSyncFooter(answer, syncResult), true);
     }
     await updater.finish();
     markTiming("finalCardDoneMs");
