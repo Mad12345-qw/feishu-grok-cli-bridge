@@ -228,6 +228,52 @@ function cardMarkdown(value = "", max = config.maxCardContentChars) {
   return clean.length > max ? `${clean.slice(0, Math.max(0, max - 20))}\n\n…内容过长，已分段继续。` : clean;
 }
 
+function activeModelLabel() {
+  return cardText(config.gpt55Model || "未配置模型", 80);
+}
+
+function runtimeModelReport() {
+  const searchStatus = config.gpt55WebSearchEnabled
+    ? "已启用；消息包含“搜索”时会强制执行联网检索"
+    : "未启用";
+  return [
+    "## 当前运行模型",
+    "",
+    `- **模型 ID**：\`${activeModelLabel()}\``,
+    "- **信息来源**：服务端运行时配置与上游 API 响应元数据，不是模型自报。",
+    "",
+    "## 本桥接已验证能力",
+    "",
+    "- **对话与投研回答**：支持",
+    "- **流式输出**：支持",
+    `- **联网检索**：${searchStatus}`,
+    "- **单次回答上限**：4,000 output tokens",
+    "- **生成温度**：0.2",
+    "- **会话上下文**：当前飞书会话最近 12 轮",
+    "",
+    "## 边界",
+    "",
+    "未从上游模型元数据确认的上下文长度、视觉、音频、代码执行等厂商级能力，不在这里臆测；需要时以实际调用结果为准。"
+  ].join("\n");
+}
+
+function isRuntimeModelQuestion(text = "") {
+  const clean = String(text || "").trim();
+  if (!clean || clean.length > 180) return false;
+  return /(什么模型|哪个模型|哪种模型|当前模型|实际模型|使用的模型|正在用的模型|模型.{0,12}(特性|能力|配置|信息)|你是.{0,12}模型|what.{0,20}model|model.{0,20}(feature|capability|config))/i.test(clean);
+}
+
+function buildRuntimeModelContextBlock() {
+  return [
+    "Authoritative runtime model information:",
+    `- Active model ID: ${activeModelLabel()}`,
+    "- This model ID comes from server runtime configuration and upstream response metadata.",
+    `- Web search for this bridge: ${config.gpt55WebSearchEnabled ? "enabled; the user field 搜索 forces fresh web search" : "disabled"}.`,
+    "- Streaming output is enabled. This bridge requests temperature 0.2 and caps one response at 4000 output tokens.",
+    "When asked which model is running or what it can do, state the exact Active model ID above. Describe only these verified bridge capabilities and do not invent provider-specific context window, multimodal, or tool claims."
+  ].join("\n");
+}
+
 function escapeRegExp(value = "") {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -687,7 +733,7 @@ function grokModeLabel(title = "", { webSearch = false } = {}) {
 
 function grokCardSubtitle({ webSearch = false, media = false, streaming = false } = {}) {
   return [
-    "OpenAI CLI",
+    activeModelLabel(),
     media ? "媒体结果卡片" : webSearch ? "联网检索" : "原生卡片",
     streaming ? "流式更新" : "完成"
   ].join(" · ");
@@ -737,7 +783,7 @@ function grokFooterNote({
   wikiSynced = false,
   obsidianSynced = false
 } = {}) {
-  const parts = ["X1", "OpenAI Bridge"];
+  const parts = ["X1", activeModelLabel(), "OpenAI Bridge"];
   if (webSearch) parts.push("联网检索");
   if (memoryRecall) {
     const count = Number.isFinite(Number(memoryRecallCount)) ? ` ${Number(memoryRecallCount)}条` : "";
@@ -764,7 +810,7 @@ function grokFooterNote({
   };
 }
 
-function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = false, status = "OpenAI CLI 已接管任务", headerTemplate = "", modeTagColor = "", memorySync = false, memoryRecall = false } = {}) {
+function buildStreamingCard(text = "", title = `${activeModelLabel()} 回复`, { webSearch = false, status = "模型已接管任务", headerTemplate = "", modeTagColor = "", memorySync = false, memoryRecall = false } = {}) {
   const media = /视频|媒体|图片|图像|照片|video|image|photo|picture/i.test(`${title}`);
   return {
     schema: "2.0",
@@ -774,7 +820,7 @@ function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = fa
       enable_forward: false,
       width_mode: "fill",
       summary: {
-        content: "[生成中...] OpenAI CLI"
+        content: `[生成中...] ${activeModelLabel()}`
       },
       streaming_config: {
         print_frequency_ms: { default: 45, android: 45, ios: 45, pc: 45 },
@@ -818,7 +864,7 @@ function buildStreamingCard(text = "", title = "OpenAI 回复", { webSearch = fa
   };
 }
 
-function buildFinalCard(text = "", title = "OpenAI 回复", {
+function buildFinalCard(text = "", title = `${activeModelLabel()} 回复`, {
   webSearch = false,
   headerTemplate = "",
   modeTagColor = "",
@@ -882,7 +928,7 @@ function buildFinalCard(text = "", title = "OpenAI 回复", {
   };
 }
 
-function buildFeishuCard(text = "", title = "OpenAI 回复", { webSearch = false, part = 1, total = 1, headerTemplate = "" } = {}) {
+function buildFeishuCard(text = "", title = `${activeModelLabel()} 回复`, { webSearch = false, part = 1, total = 1, headerTemplate = "" } = {}) {
   const safe = sanitizeFeishuText(text);
   const elements = [
     {
@@ -899,7 +945,7 @@ function buildFeishuCard(text = "", title = "OpenAI 回复", { webSearch = false
       {
         tag: "plain_text",
         content: [
-          webSearch ? "OpenAI CLI · 联网检索" : "OpenAI CLI",
+          webSearch ? `${activeModelLabel()} · 联网检索` : activeModelLabel(),
           total > 1 ? `第 ${part}/${total} 段` : "飞书卡片富文本"
         ].join(" · ")
       }
@@ -1470,12 +1516,22 @@ function classifyTask(text = "", { forceWebSearch = false } = {}) {
       ]
     };
   }
+  if (isRuntimeModelQuestion(text)) {
+    return {
+      kind: "model_info",
+      maxTurns: 0,
+      title: `${activeModelLabel()} 模型信息`,
+      webSearch: false,
+      mediaTask: false,
+      rules: []
+    };
+  }
   if (forceWebSearch || shouldUseWebSearch(text)) {
     const deep = isDeepResearch(text);
     return {
       kind: deep ? "research" : "quick_search",
       maxTurns: deep ? 18 : 10,
-      title: "OpenAI 联网检索",
+      title: `${activeModelLabel()} 联网检索`,
       webSearch: true,
       mediaTask: false,
       rules: [SEARCH_REQUIRED_RULE, WEB_SOURCE_LINK_RULE]
@@ -1485,7 +1541,7 @@ function classifyTask(text = "", { forceWebSearch = false } = {}) {
     return {
       kind: "quick_fact",
       maxTurns: 6,
-      title: "OpenAI 回复",
+      title: `${activeModelLabel()} 回复`,
       webSearch: false,
       mediaTask: false,
       rules: []
@@ -1494,7 +1550,7 @@ function classifyTask(text = "", { forceWebSearch = false } = {}) {
   return {
     kind: "chat",
     maxTurns: 8,
-    title: "OpenAI 回复",
+    title: `${activeModelLabel()} 回复`,
     webSearch: false,
     mediaTask: false,
     rules: []
@@ -1731,6 +1787,7 @@ function buildGrokPrompt(userPrompt = "", { quotedContext = null, taskRules = []
     : [];
   return [
     config.systemPrompt,
+    buildRuntimeModelContextBlock(),
     buildConversationBlock(conversationHistory),
     buildMemoryContextBlock(memoryItems),
     ...quotedLines,
@@ -1941,14 +1998,14 @@ async function callGpt55Responses(prompt, { onText, onEvent, timeoutMs } = {}) {
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`GPT5.5 Responses API ${response.status}: ${sanitizeGrokOutput(text).slice(0, 1000)}`);
+      throw new Error(`${activeModelLabel()} Responses API ${response.status}: ${sanitizeGrokOutput(text).slice(0, 1000)}`);
     }
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("text/event-stream")) {
       const data = await response.json();
       const text = sanitizeGrokOutput(gpt55ExtractOutputText(data));
       if (text) onText?.(text, text);
-      if (!text) throw new Error(`GPT5.5 Responses API returned no text: ${JSON.stringify(data).slice(0, 1000)}`);
+      if (!text) throw new Error(`${activeModelLabel()} Responses API returned no text: ${JSON.stringify(data).slice(0, 1000)}`);
       return text;
     }
     const decoder = new TextDecoder();
@@ -1979,13 +2036,13 @@ async function callGpt55Responses(prompt, { onText, onEvent, timeoutMs } = {}) {
           } else if (event.type === "response.completed") {
             completedText = gpt55ExtractOutputText(event.response || {});
           } else if (event.type === "response.failed") {
-            throw new Error(`GPT5.5 Responses API failed: ${JSON.stringify(event.error || event).slice(0, 1000)}`);
+            throw new Error(`${activeModelLabel()} Responses API failed: ${JSON.stringify(event.error || event).slice(0, 1000)}`);
           }
         }
       }
     }
     const finalText = sanitizeGrokOutput(answer || completedText);
-    if (!finalText) throw new Error("GPT5.5 Responses API returned empty output.");
+    if (!finalText) throw new Error(`${activeModelLabel()} Responses API returned empty output.`);
     if (finalText !== answer) onText?.(finalText, finalText);
     return finalText;
   } finally {
@@ -2380,7 +2437,7 @@ function createCardKitStreamingUpdater({ feishu, cardId, messageId = "", title, 
       await enqueue(() => feishu.updateCardSettings(cardId, {
         config: {
           streaming_mode: false,
-          summary: { content: "OpenAI CLI 运行失败" }
+          summary: { content: `${activeModelLabel()} 运行失败` }
         }
       }, nextSequence()));
       await queue;
@@ -2400,7 +2457,7 @@ function createPlainFinalUpdater({ feishu, messageId, title }) {
       await feishu.replyRich(messageId, latestAnswer || "没有生成可发送的回复。", title);
     },
     fail: async (errorText) => {
-      await feishu.replyRich(messageId, sanitizeFeishuText(errorText), "OpenAI 运行错误");
+      await feishu.replyRich(messageId, sanitizeFeishuText(errorText), `${activeModelLabel()} 运行错误`);
     }
   };
 }
@@ -3238,7 +3295,7 @@ app.get("/debug/grok-test", async (req, res) => {
     return;
   }
   try {
-    const prompt = String(req.query.prompt || "用一句中文回答：GPT5.5 Responses 联网桥已经可以运行。").slice(0, 1000);
+    const prompt = String(req.query.prompt || `用一句中文回答：${activeModelLabel()} Responses 联网桥已经可以运行。`).slice(0, 1000);
     const answer = await callGrokCli(prompt, { memoryEnabled: false });
     res.json({ ok: true, model: config.gpt55Model, webSearchEnabled: config.gpt55WebSearchEnabled, answer: answer.slice(0, 4000) });
   } catch (error) {
@@ -3836,7 +3893,11 @@ async function processFeishuMessage(payload) {
         title,
         {
           webSearch: job.webSearch,
-          status: job.webSearch ? "正在调用 GPT5.5 联网搜索" : "正在调用 GPT5.5",
+          status: task.kind === "model_info"
+            ? "正在读取服务端运行模型配置"
+            : job.webSearch
+              ? `正在调用 ${activeModelLabel()} 联网搜索`
+              : `正在调用 ${activeModelLabel()}`,
           memorySync: memoryDirectives.sync,
           memoryRecall: memoryDirectives.recall
         }
@@ -3900,9 +3961,11 @@ async function processFeishuMessage(payload) {
       }
     };
     markTiming("grokStartMs");
-    const answer = task.kind === "video"
-      ? await callGrokImagineVideo(grokPrompt, grokOptions)
-      : await callGrokCli(grokPrompt, grokOptions);
+    const answer = task.kind === "model_info"
+      ? runtimeModelReport()
+      : task.kind === "video"
+        ? await callGrokImagineVideo(grokPrompt, grokOptions)
+        : await callGrokCli(grokPrompt, grokOptions);
     markTiming("grokDoneMs");
     const imagePaths = extractLocalImagePaths(answer);
     const videoPaths = extractLocalVideoPaths(answer);
@@ -3959,7 +4022,7 @@ async function processFeishuMessage(payload) {
     job.completedAt = new Date().toISOString();
     markTiming("failedMs");
     const failure = [
-      "这次没有拿到 OpenAI 的最终回答，但我不会停在“正在检索”。",
+      `这次没有拿到 ${activeModelLabel()} 的最终回答，但我不会停在“正在检索”。`,
       "",
       `原因：${error.message}`,
       "",
@@ -3968,7 +4031,7 @@ async function processFeishuMessage(payload) {
     if (updater) {
       await updater.fail(failure);
     } else {
-      await feishu.replyRich(messageId, failure, "OpenAI 运行错误");
+      await feishu.replyRich(messageId, failure, `${activeModelLabel()} 运行错误`);
     }
   } finally {
     safeDeleteLocalFiles(quotedTempFiles);
