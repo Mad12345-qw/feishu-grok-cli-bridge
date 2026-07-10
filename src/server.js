@@ -1362,12 +1362,18 @@ function messageSenderMatchesBot(message = {}, bot = {}) {
 
 async function shouldHandleFeishuMessage(message = {}) {
   if (message.chat_type === "p2p") return { handle: true, reason: "p2p" };
-  if (messageRepliesToKnownBotMessage(message)) return { handle: true, reason: "known_bot_reply" };
   const mentions = messageMentions(message);
   try {
     const bot = await feishu.botInfo();
     if (mentions.some((mention) => mentionMatchesBot(mention, bot))) {
       return { handle: true, reason: "mentioned_grok", mentionCount: mentions.length, botName: bot.app_name || "" };
+    }
+    // In a group, an explicit @ to anyone else takes precedence over a reply relationship.
+    if (mentions.length) {
+      return { handle: false, reason: "group_mentioned_other", mentionCount: mentions.length, botName: bot.app_name || "" };
+    }
+    if (messageRepliesToKnownBotMessage(message)) {
+      return { handle: true, reason: "known_bot_reply", mentionCount: 0, botName: bot.app_name || "" };
     }
     const quotedId = quotedMessageId(message);
     if (!quotedId) return { handle: false, reason: "group_not_mentioned", mentionCount: mentions.length, botName: bot.app_name || "" };
