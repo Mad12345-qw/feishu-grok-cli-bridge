@@ -143,6 +143,10 @@ function sftpReadFile(client, remotePath) {
   });
 }
 
+function isMissingRemoteStateFile(error) {
+  return Number(error?.code) === 2 || /no such file|not found/i.test(String(error?.message || ""));
+}
+
 async function redisCommand(command) {
   const cfg = redisConfig();
   if (!cfg.enabled) throw new Error("Redis Grok state storage is not configured.");
@@ -388,7 +392,15 @@ export async function restoreGrokStateFromRemote() {
   if (!cfg.enabled) return { restored: false, reason: "not_configured" };
   const client = await sshConnect(cfg);
   try {
-    const value = await sftpReadFile(client, cfg.file);
+    let value;
+    try {
+      value = await sftpReadFile(client, cfg.file);
+    } catch (error) {
+      if (isMissingRemoteStateFile(error)) {
+        return { restored: false, reason: "remote_empty", source: "remote_ssh", host: cfg.host, file: cfg.file };
+      }
+      throw error;
+    }
     const payload = decryptPayload(value.toString("utf8"));
     const result = restorePayloadFiles(payload);
     return {
