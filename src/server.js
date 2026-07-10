@@ -1144,10 +1144,79 @@ function messageContent(message = {}) {
   return parseContent(message.content ?? message.body?.content ?? {});
 }
 
-function extractMessageText(message = {}) {
+function cardContentText(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  return value.content || value.text || value.title || "";
+}
+
+function cardElementText(element = {}) {
+  if (!element || typeof element !== "object") return "";
+  const tag = String(element.tag || "").toLowerCase();
+  if (tag === "markdown" || tag === "lark_md" || tag === "plain_text") {
+    return cardContentText(element.content || element);
+  }
+  if (tag === "div") return cardContentText(element.text);
+  if (tag === "note") return (element.elements || []).map(cardElementText).filter(Boolean).join("\n");
+  if (tag === "column_set") return (element.columns || []).map(cardElementText).filter(Boolean).join("\n");
+  if (tag === "column" || tag === "form" || tag === "collapsible_panel") {
+    const heading = cardContentText(element.header || element.title);
+    const children = (element.elements || []).map(cardElementText).filter(Boolean).join("\n");
+    return [heading, children].filter(Boolean).join("\n");
+  }
+  return "";
+}
+
+function interactiveCardContent(content = {}) {
+  let card = parseContent(content);
+  if (card?.type === "card" && card?.data && typeof card.data === "object") card = card.data;
+  if (card?.card && typeof card.card === "object") card = card.card;
+  if (!card || typeof card !== "object") return { text: "", schema: "", source: "interactive_empty" };
+
+  const schema = String(card.schema || "1.0");
+  const bodyElements = Array.isArray(card?.body?.elements)
+    ? card.body.elements
+    : Array.isArray(card.elements)
+      ? card.elements
+      : [];
+  const answerElements = bodyElements.filter((element) => element?.element_id === STREAM_ANSWER_ELEMENT_ID);
+  const answerText = answerElements.map(cardElementText).filter(Boolean).join("\n").trim();
+  if (answerText) return { text: answerText, schema, source: "interactive_answer" };
+
+  const headerText = [
+    cardContentText(card?.header?.title),
+    cardContentText(card?.header?.subtitle)
+  ].filter(Boolean).join("\n");
+  const bodyText = bodyElements
+    .filter((element) => ![STREAM_STATUS_ELEMENT_ID, "grok_footer"].includes(element?.element_id))
+    .map(cardElementText)
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return {
+    text: [headerText, bodyText].filter(Boolean).join("\n\n"),
+    schema,
+    source: "interactive_card"
+  };
+}
+
+function extractMessageTextDetails(message = {}) {
   const content = messageContent(message);
-  if (messageType(message) === "post") return stripAtTags(flattenPostContent(content));
-  return stripAtTags(content.text || content.title || content.description || "");
+  const type = messageType(message);
+  if (type === "post") return { text: stripAtTags(flattenPostContent(content)), source: "post", schema: "" };
+  if (type === "interactive") {
+    const result = interactiveCardContent(content);
+    return { ...result, text: stripAtTags(result.text) };
+  }
+  return {
+    text: stripAtTags(content.text || content.title || content.description || ""),
+    source: type || "unknown",
+    schema: ""
+  };
+}
+
+function extractMessageText(message = {}) {
+  return extractMessageTextDetails(message).text;
 }
 
 function quotedMessageId(message = {}) {
@@ -1633,11 +1702,19 @@ function readChatHistory(session = null) {
   return Array.isArray(turns) ? turns.slice(-config.sessionHistoryTurns) : [];
 }
 
-function appendChatHistory(session = null, { user = "", assistant = "" } = {}) {
+function readStoredReplyText(session = null, messageId = "") {
+  const key = chatHistoryKey(session);
+  if (!key || !messageId) return "";
+  const state = readOpenAiChatHistory();
+  return String(state.chats?.[key]?.replies?.[messageId]?.text || "");
+}
+
+function appendChatHistory(session = null, { user = "", assistant = "", replyMessageId = "" } = {}) {
   const key = chatHistoryKey(session);
   if (!key || (!user && !assistant)) return;
   const state = readOpenAiChatHistory();
-  const existing = Array.isArray(state.chats?.[key]?.turns) ? state.chats[key].turns : [];
+  const current = state.chats?.[key] || {};
+  const existing = Array.isArray(current.turns) ? current.turns : [];
   const next = [
     ...existing,
     {
@@ -1646,11 +1723,23 @@ function appendChatHistory(session = null, { user = "", assistant = "" } = {}) {
       assistant: String(assistant || "").slice(0, 12000)
     }
   ].slice(-Math.max(1, config.sessionHistoryTurns));
+  const replies = { ...(current.replies && typeof current.replies === "object" ? current.replies : {}) };
+  if (replyMessageId && assistant) {
+    replies[replyMessageId] = {
+      at: new Date().toISOString(),
+      text: String(assistant).slice(0, 12000)
+    };
+  }
+  const retainedReplies = Object.entries(replies)
+    .sort(([, left], [, right]) => String(right?.at || "").localeCompare(String(left?.at || "")))
+    .slice(0, 36)
+    .reduce((result, [id, value]) => ({ ...result, [id]: value }), {});
   state.chats[key] = {
     sessionId: session?.sessionId || "",
     scopeKey: key,
     updatedAt: new Date().toISOString(),
-    turns: next
+    turns: next,
+    replies: retainedReplies
   };
   writeOpenAiChatHistory(state);
 }
@@ -2559,7 +2648,9 @@ class FeishuClient {
 
   async getMessage(messageId) {
     if (!messageId) return null;
-    const data = await this.get(`/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`);
+    // Feishu only returns the sent Card JSON when this documented query parameter is set.
+    const params = new URLSearchParams({ card_msg_content_type: "user_card_content" });
+    const data = await this.get(`/open-apis/im/v1/messages/${encodeURIComponent(messageId)}?${params.toString()}`);
     const item = data?.data?.items?.[0] || data?.data?.message || data?.data?.item || data?.data;
     return item && typeof item === "object" ? item : null;
   }
@@ -2631,7 +2722,7 @@ class FeishuClient {
     }
   }
 
-  async quotedContextFromMessage(message) {
+  async quotedContextFromMessage(message, { resolveStoredReplyText } = {}) {
     const firstQuoteId = quotedMessageId(message);
     if (!firstQuoteId) return null;
 
@@ -2646,6 +2737,8 @@ class FeishuClient {
       const entry = {
         messageId: currentId,
         messageType: "",
+        textSource: "",
+        cardSchema: "",
         textPreview: "",
         resourceCount: 0,
         fileCount: 0
@@ -2659,10 +2752,20 @@ class FeishuClient {
       }
 
       const type = messageType(quoted);
-      const text = extractMessageText(quoted);
+      const extracted = extractMessageTextDetails(quoted);
+      let text = extracted.text;
       const resources = messageContentKeys(quoted);
       const filesBefore = files.filter((item) => item.path).length;
       entry.messageType = type;
+      entry.textSource = extracted.source;
+      entry.cardSchema = extracted.schema;
+      if (!text && type === "interactive" && typeof resolveStoredReplyText === "function") {
+        const storedText = await resolveStoredReplyText(currentId);
+        if (storedText) {
+          text = String(storedText);
+          entry.textSource = "stored_reply_fallback";
+        }
+      }
       entry.textPreview = text.slice(0, 160);
       entry.resourceCount = resources.length;
 
@@ -3758,10 +3861,13 @@ async function processFeishuMessage(payload) {
     pushRouteDecision({ ...baseRouteLog, ignored: true });
     return;
   }
+  const session = chatSessionScope(message);
   let quotedContextPromise = null;
   const loadQuotedContext = () => {
     if (!quotedContextPromise) {
-      quotedContextPromise = feishu.quotedContextFromMessage(message)
+      quotedContextPromise = feishu.quotedContextFromMessage(message, {
+        resolveStoredReplyText: (quotedMessageId) => readStoredReplyText(session, quotedMessageId)
+      })
         .then((context) => ({ context }))
         .catch((error) => ({ error }));
     }
@@ -3851,7 +3957,6 @@ async function processFeishuMessage(payload) {
   pushRouteDecision({ ...baseRouteLog, ignored: false, promptFromQuotedMessage });
   const task = classifyTask(prompt, { forceWebSearch: memoryDirectives.webSearch });
   const grokPrompt = task.prompt || prompt;
-  const session = chatSessionScope(message);
   const startedAtMs = Date.now();
   loadQuotedContext();
 
@@ -3927,6 +4032,19 @@ async function processFeishuMessage(payload) {
     job.quotedMessageId = quotedContext?.messageId || "";
     job.quotedFileCount = quotedContext?.files?.filter((item) => item.path).length || 0;
     job.quotedChain = quotedContext?.chain || [];
+    if (job.quotedChain.length) {
+      console.log("Feishu quoted context:", JSON.stringify({
+        messageId: idPrefix(job.quotedMessageId),
+        depth: job.quotedChain.length,
+        sources: job.quotedChain.map((entry) => ({
+          messageType: entry.messageType,
+          textSource: entry.textSource,
+          cardSchema: entry.cardSchema,
+          hasText: Boolean(entry.textPreview),
+          error: entry.error || ""
+        }))
+      }));
+    }
     markTiming("quotedContextReadyMs");
     const conversationHistory = readChatHistory(session);
     job.sessionHistoryTurns = conversationHistory.length;
@@ -3970,7 +4088,11 @@ async function processFeishuMessage(payload) {
     const imagePaths = extractLocalImagePaths(answer);
     const videoPaths = extractLocalVideoPaths(answer);
     const answerWithoutMediaPaths = stripLocalMediaPaths(answer);
-    appendChatHistory(session, { user: prompt, assistant: answerWithoutMediaPaths || answer });
+    appendChatHistory(session, {
+      user: prompt,
+      assistant: answerWithoutMediaPaths || answer,
+      replyMessageId: job.replyMessageId
+    });
     await syncGrokStateIfChanged("openai-chat-history").catch((error) => {
       job.stateSyncError = error.message;
       console.warn(`OpenAI chat history state sync failed: ${error.message}`);
