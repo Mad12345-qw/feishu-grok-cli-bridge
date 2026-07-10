@@ -96,6 +96,10 @@ const config = {
   gpt55ApiKey: process.env.GPT55_API_KEY || process.env.MIKOTO_API_KEY || "",
   gpt55Model: process.env.GPT55_MODEL || process.env.MIKOTO_MODEL || "gpt-5.5",
   gpt55WebSearchEnabled: envFlag("GPT55_WEB_SEARCH_ENABLED", true),
+  gptImageModel: process.env.GPT_IMAGE_MODEL || "gpt-image-2",
+  gptImageSize: process.env.GPT_IMAGE_SIZE || "1024x1024",
+  gptImageQuality: process.env.GPT_IMAGE_QUALITY || "medium",
+  gptImageTimeoutMs: envNumber("GPT_IMAGE_TIMEOUT_MS", 180000),
   obsidianSyncEnabled: envFlag("OBSIDIAN_SYNC_ENABLED", Boolean(process.env.OBSIDIAN_GITHUB_TOKEN || process.env.GITHUB_BACKUP_TOKEN)),
   obsidianGithubToken: process.env.OBSIDIAN_GITHUB_TOKEN || process.env.GITHUB_BACKUP_TOKEN || "",
   obsidianGithubRepo: process.env.OBSIDIAN_GITHUB_REPO || "Mad12345-qw/obsidian-knowledge-sync",
@@ -1508,12 +1512,12 @@ function shouldUseWebSearch(text = "") {
 }
 
 function parseMediaCommand(text = "") {
-  const match = String(text || "").match(/生成(图片|视频)\s*[:：]\s*([\s\S]*)/i);
-  if (!match) return null;
-  const kind = match[1] === "视频" ? "video" : "image";
-  const prompt = String(match[2] || "").trim();
-  if (!prompt) return null;
-  return { kind, prompt };
+  const raw = String(text || "");
+  const image = removeStandaloneDirective(raw, "生图");
+  if (image.found) return { kind: "image", prompt: image.cleaned.replace(/^\s*[:：]\s*/, "").trim() };
+  const video = raw.match(/生成视频\s*[:：]\s*([\s\S]*)/i);
+  if (!video) return null;
+  return { kind: "video", prompt: String(video[1] || "").trim() };
 }
 
 function parseControlCommand(text = "") {
@@ -1575,14 +1579,12 @@ function classifyTask(text = "", { forceWebSearch = false } = {}) {
   if (media?.kind === "image") {
     return {
       kind: "image",
-      maxTurns: config.mediaMaxTurns,
-      title: "OpenAI 图片生成",
+      maxTurns: 0,
+      title: `${config.gptImageModel} 生图`,
       webSearch: false,
       mediaTask: true,
       prompt: media.prompt,
-      rules: [
-        "This is a OpenAI Imagine image task. Use the built-in image generation capability, such as /imagine, and return the saved local image path. If quoted files are provided, use them as explicit references."
-      ]
+      rules: []
     };
   }
   if (isRuntimeModelQuestion(text)) {
@@ -2040,6 +2042,93 @@ function gpt55ResponsesUrl() {
   if (/\/responses$/i.test(clean)) return clean;
   if (/\/v1$/i.test(clean)) return `${clean}/responses`;
   return `${clean}/v1/responses`;
+}
+
+function gptImageGenerationsUrl() {
+  const clean = String(config.gpt55BaseUrl || "").replace(/\/+$/, "");
+  if (!clean) throw new Error("GPT55_BASE_URL is required.");
+  if (/\/v1\/responses$/i.test(clean)) return clean.replace(/\/responses$/i, "/images/generations");
+  if (/\/responses$/i.test(clean)) return clean.replace(/\/responses$/i, "/images/generations");
+  if (/\/v1$/i.test(clean)) return `${clean}/images/generations`;
+  return `${clean}/v1/images/generations`;
+}
+
+function imageExtension(outputFormat = "") {
+  const clean = String(outputFormat || "").toLowerCase();
+  if (clean === "jpeg" || clean === "jpg") return "jpg";
+  if (clean === "webp") return "webp";
+  return "png";
+}
+
+function saveGeneratedImage(buffer, outputFormat = "png") {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error("Image API returned an empty image payload.");
+  if (buffer.length > config.maxImageBytes) {
+    throw new Error(`Generated image exceeds the ${config.maxImageBytes} byte upload limit.`);
+  }
+  const dir = path.join(os.homedir(), ".grok", "generated-media");
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `gpt-image-${Date.now()}-${crypto.randomUUID()}.${imageExtension(outputFormat)}`);
+  fs.writeFileSync(filePath, buffer);
+  if (!isSafeGrokImagePath(filePath)) {
+    safeDeleteLocalFile(filePath);
+    throw new Error("Generated image was not a safe uploadable image file.");
+  }
+  return filePath;
+}
+
+async function callGptImageGeneration(prompt = "") {
+  const cleanPrompt = String(prompt || "").trim();
+  if (!cleanPrompt) throw new Error("“生图”后需要写出图片描述，例如：生图 一张未来城市夜景。");
+  if (!config.gpt55ApiKey) throw new Error("GPT55_API_KEY is required for image generation.");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.gptImageTimeoutMs);
+  try {
+    const response = await fetch(gptImageGenerationsUrl(), {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${config.gpt55ApiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: config.gptImageModel,
+        prompt: cleanPrompt,
+        size: config.gptImageSize,
+        quality: config.gptImageQuality,
+        output_format: "png",
+        n: 1
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = data?.error?.message || data?.message || JSON.stringify(data).slice(0, 500);
+      throw new Error(`GPT Image API failed ${response.status}: ${detail}`);
+    }
+    const item = data?.data?.[0] || {};
+    if (item.b64_json || item.base64) {
+      const raw = String(item.b64_json || item.base64);
+      const dataUrl = raw.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
+      const imageBuffer = Buffer.from(dataUrl ? dataUrl[2] : raw, "base64");
+      return {
+        imagePath: saveGeneratedImage(imageBuffer, dataUrl?.[1] || item.output_format || "png"),
+        revisedPrompt: String(item.revised_prompt || "")
+      };
+    }
+    if (item.url) {
+      const imageResponse = await fetch(item.url, { signal: controller.signal });
+      if (!imageResponse.ok) throw new Error(`GPT Image URL download failed ${imageResponse.status}.`);
+      const contentType = imageResponse.headers.get("content-type") || "";
+      const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+      return {
+        imagePath: saveGeneratedImage(imageBuffer, contentType.includes("webp") ? "webp" : contentType.includes("jpeg") ? "jpg" : "png"),
+        revisedPrompt: String(item.revised_prompt || "")
+      };
+    }
+    throw new Error("GPT Image API returned neither b64_json nor an image URL.");
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function gpt55ExtractOutputText(data = {}) {
@@ -3256,6 +3345,10 @@ app.get("/health", (_req, res) => {
     grokCliEnabled: config.grokCliEnabled,
     gpt55Configured: Boolean(config.gpt55BaseUrl && config.gpt55ApiKey && config.gpt55Model),
     gpt55WebSearchEnabled: config.gpt55WebSearchEnabled,
+    gptImageConfigured: Boolean(config.gpt55BaseUrl && config.gpt55ApiKey && config.gptImageModel),
+    gptImageModel: config.gptImageModel,
+    gptImageSize: config.gptImageSize,
+    gptImageQuality: config.gptImageQuality,
     grokCliCwd: config.grokCliCwd,
     grokCliCommand: config.grokCliCommand,
     grokCliCommandExists: config.grokCliCommand.includes(path.sep) ? fs.existsSync(config.grokCliCommand) : null,
@@ -3403,6 +3496,33 @@ app.get("/debug/grok-test", async (req, res) => {
     res.json({ ok: true, model: config.gpt55Model, webSearchEnabled: config.gpt55WebSearchEnabled, answer: answer.slice(0, 4000) });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/debug/gpt-image-test", async (req, res) => {
+  if (!config.debugToken || req.get("x-debug-token") !== config.debugToken) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  let imagePath = "";
+  try {
+    const prompt = String(req.body?.prompt || "A minimal blue circle on a clean white background.").slice(0, 1000);
+    const generated = await callGptImageGeneration(prompt);
+    imagePath = generated.imagePath;
+    const bytes = fs.statSync(imagePath).size;
+    res.json({
+      ok: true,
+      model: config.gptImageModel,
+      size: config.gptImageSize,
+      quality: config.gptImageQuality,
+      bytes,
+      revisedPrompt: Boolean(generated.revisedPrompt),
+      sentToChat: false
+    });
+  } catch (error) {
+    res.status(/timed out|abort/i.test(error.message) ? 504 : 500).json({ ok: false, error: error.message });
+  } finally {
+    safeDeleteLocalFile(imagePath);
   }
 });
 
@@ -4000,6 +4120,8 @@ async function processFeishuMessage(payload) {
           webSearch: job.webSearch,
           status: task.kind === "model_info"
             ? "正在读取服务端运行模型配置"
+            : task.kind === "image"
+              ? `正在使用 ${config.gptImageModel} 生图`
             : job.webSearch
               ? `正在调用 ${activeModelLabel()} 联网搜索`
               : `正在调用 ${activeModelLabel()}`,
@@ -4078,14 +4200,28 @@ async function processFeishuMessage(payload) {
         }
       }
     };
-    markTiming("grokStartMs");
-    const answer = task.kind === "model_info"
-      ? runtimeModelReport()
-      : task.kind === "video"
-        ? await callGrokImagineVideo(grokPrompt, grokOptions)
-        : await callGrokCli(grokPrompt, grokOptions);
-    markTiming("grokDoneMs");
-    const imagePaths = extractLocalImagePaths(answer);
+    let answer = "";
+    let generatedImagePaths = [];
+    if (task.kind === "image") {
+      updater.patchStatus(`正在使用 ${config.gptImageModel} 生成图片`, true);
+      markTiming("imageStartMs");
+      const generated = await callGptImageGeneration(grokPrompt);
+      generatedImagePaths = [generated.imagePath];
+      answer = generated.revisedPrompt
+        ? `已使用 ${config.gptImageModel} 生图。\n\n模型优化后的提示词：${generated.revisedPrompt}`
+        : `已使用 ${config.gptImageModel} 生图。`;
+      job.imageModel = config.gptImageModel;
+      markTiming("imageDoneMs");
+    } else {
+      markTiming("grokStartMs");
+      answer = task.kind === "model_info"
+        ? runtimeModelReport()
+        : task.kind === "video"
+          ? await callGrokImagineVideo(grokPrompt, grokOptions)
+          : await callGrokCli(grokPrompt, grokOptions);
+      markTiming("grokDoneMs");
+    }
+    const imagePaths = generatedImagePaths.length ? generatedImagePaths : extractLocalImagePaths(answer);
     const videoPaths = extractLocalVideoPaths(answer);
     const answerWithoutMediaPaths = stripLocalMediaPaths(answer);
     appendChatHistory(session, {
