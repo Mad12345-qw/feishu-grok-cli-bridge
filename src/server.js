@@ -1894,6 +1894,21 @@ function buildGrokPrompt(userPrompt = "", { quotedContext = null, taskRules = []
   ].filter(Boolean).join("\n\n");
 }
 
+function buildGptImagePrompt(userPrompt = "", { quotedContext = null } = {}) {
+  const quotedText = String(quotedContext?.text || "").trim().slice(0, 12000);
+  return [
+    "Create one accurate Chinese investment-research infographic.",
+    "The source context below is authoritative for the industry subject. Do not replace it with an unrelated industry, product, or supply chain.",
+    "Do not invent companies, financial figures, market shares, or technical claims that are absent from the source.",
+    "Use a clean institutional-research visual style: one clear title, 4-8 concise Chinese labels, grouped modules and arrows. Avoid dense paragraphs and tiny unreadable text.",
+    "Do not substitute batteries, lithium, EVs, or other unrelated themes unless the source context explicitly concerns them.",
+    "User visual request:",
+    String(userPrompt || "").trim(),
+    quotedText ? `Authoritative quoted source context:\n${quotedText}` : "No quoted source context was provided. Use only the user's visual request.",
+    "Generate the image now."
+  ].filter(Boolean).join("\n\n");
+}
+
 function parseStreamingJsonLine(line = "") {
   const clean = stripAnsi(line).trim();
   if (!clean || !clean.startsWith("{")) return null;
@@ -4212,14 +4227,20 @@ async function processFeishuMessage(payload) {
     let answer = "";
     let generatedImagePaths = [];
     if (task.kind === "image") {
-      updater.patchStatus(`正在使用 ${config.gptImageModel} 生成图片`, true);
+      const imagePrompt = buildGptImagePrompt(grokPrompt, { quotedContext });
+      const usedQuotedContext = Boolean(String(quotedContext?.text || "").trim());
+      updater.patchStatus(
+        usedQuotedContext ? "正在依据被引用内容生成图片" : `正在使用 ${config.gptImageModel} 生成图片`,
+        true
+      );
       markTiming("imageStartMs");
-      const generated = await callGptImageGeneration(grokPrompt);
+      const generated = await callGptImageGeneration(imagePrompt);
       generatedImagePaths = [generated.imagePath];
       answer = generated.revisedPrompt
         ? `已使用 ${config.gptImageModel} 生图。\n\n模型优化后的提示词：${generated.revisedPrompt}`
         : `已使用 ${config.gptImageModel} 生图。`;
       job.imageModel = config.gptImageModel;
+      job.imagePromptSource = usedQuotedContext ? "quoted_context" : "direct_prompt";
       markTiming("imageDoneMs");
     } else {
       markTiming("grokStartMs");
