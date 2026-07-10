@@ -3507,9 +3507,11 @@ app.post("/debug/gpt-image-test", async (req, res) => {
   let imagePath = "";
   try {
     const prompt = String(req.body?.prompt || "A minimal blue circle on a clean white background.").slice(0, 1000);
+    const uploadToFeishu = Boolean(req.body?.upload_to_feishu);
     const generated = await callGptImageGeneration(prompt);
     imagePath = generated.imagePath;
     const bytes = fs.statSync(imagePath).size;
+    const imageKey = uploadToFeishu ? await feishu.uploadImage(imagePath) : "";
     res.json({
       ok: true,
       model: config.gptImageModel,
@@ -3517,6 +3519,7 @@ app.post("/debug/gpt-image-test", async (req, res) => {
       quality: config.gptImageQuality,
       bytes,
       revisedPrompt: Boolean(generated.revisedPrompt),
+      uploadedToFeishu: Boolean(imageKey),
       sentToChat: false
     });
   } catch (error) {
