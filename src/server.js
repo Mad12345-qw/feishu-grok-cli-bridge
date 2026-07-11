@@ -1894,7 +1894,7 @@ function buildGrokPrompt(userPrompt = "", { quotedContext = null, taskRules = []
 
 function buildGptImagePrompt(userPrompt = "", { quotedContext = null } = {}) {
   const userRequest = String(userPrompt || "").trim();
-  const quotedText = String(quotedContext?.text || "").trim().slice(0, 12000);
+  const quotedText = String(quotedContext?.text || "").trim().slice(0, 3200);
   if (!quotedText) {
     const realDisasterPhoto = /(台风|飓风|气旋|地震|洪水|海啸|山火|灾害|typhoon|hurricane|cyclone|earthquake|flood|tsunami|wildfire)/i.test(userRequest)
       && /(实景|真实|纪实|新闻照片|现场照片|photorealistic|documentary|news photo|real photo)/i.test(userRequest);
@@ -1911,16 +1911,11 @@ function buildGptImagePrompt(userPrompt = "", { quotedContext = null } = {}) {
     return userRequest;
   }
   return [
-    "Create one accurate Chinese investment-research infographic.",
-    "The source context below is authoritative for the industry subject. Do not replace it with an unrelated industry, product, or supply chain.",
-    "Do not invent companies, financial figures, market shares, or technical claims that are absent from the source.",
-    "Use a clean institutional-research visual style: one clear title, 4-8 concise Chinese labels, grouped modules and arrows. Avoid dense paragraphs and tiny unreadable text.",
-    "Do not substitute batteries, lithium, EVs, or other unrelated themes unless the source context explicitly concerns them.",
-    "User visual request:",
-    userRequest,
-    `Authoritative quoted source context:\n${quotedText}`,
-    "Generate the image now."
-  ].filter(Boolean).join("\n\n");
+    `Create a clean Chinese investment-research infographic for this request: ${userRequest || "visualize the supplied research"}.`,
+    `Use these source facts as authoritative: ${quotedText}`,
+    "Show one clear title and 4-8 connected modules with large readable Chinese labels and arrows.",
+    "Use only supplied facts. Do not invent companies, figures, market shares, financial data, or unrelated industries. Avoid dense paragraphs and tiny text."
+  ].join(" ");
 }
 
 function parseStreamingJsonLine(line = "") {
