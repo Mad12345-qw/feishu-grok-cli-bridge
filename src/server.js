@@ -1893,7 +1893,23 @@ function buildGrokPrompt(userPrompt = "", { quotedContext = null, taskRules = []
 }
 
 function buildGptImagePrompt(userPrompt = "", { quotedContext = null } = {}) {
+  const userRequest = String(userPrompt || "").trim();
   const quotedText = String(quotedContext?.text || "").trim().slice(0, 12000);
+  if (!quotedText) {
+    const realDisasterPhoto = /(台风|飓风|气旋|地震|洪水|海啸|山火|灾害|typhoon|hurricane|cyclone|earthquake|flood|tsunami|wildfire)/i.test(userRequest)
+      && /(实景|真实|纪实|新闻照片|现场照片|photorealistic|documentary|news photo|real photo)/i.test(userRequest);
+    if (realDisasterPhoto) {
+      const subject = /(台风|飓风|气旋|typhoon|hurricane|cyclone)/i.test(userRequest)
+        ? "a powerful tropical cyclone over the ocean, with enormous spiral cloud bands, turbulent seas, heavy rain, and dramatic natural lighting"
+        : "the requested severe weather or disaster subject, preserving its defining physical characteristics and atmosphere";
+      return [
+        `Create a photorealistic visual reconstruction of ${subject}.`,
+        "Preserve the requested atmosphere and physical characteristics, but do not present the result as an authentic news photograph or documentary evidence.",
+        "Use a safe observation perspective. Show no casualties, labels, text, logos, or infographic layout."
+      ].join(" ");
+    }
+    return userRequest;
+  }
   return [
     "Create one accurate Chinese investment-research infographic.",
     "The source context below is authoritative for the industry subject. Do not replace it with an unrelated industry, product, or supply chain.",
@@ -1901,8 +1917,8 @@ function buildGptImagePrompt(userPrompt = "", { quotedContext = null } = {}) {
     "Use a clean institutional-research visual style: one clear title, 4-8 concise Chinese labels, grouped modules and arrows. Avoid dense paragraphs and tiny unreadable text.",
     "Do not substitute batteries, lithium, EVs, or other unrelated themes unless the source context explicitly concerns them.",
     "User visual request:",
-    String(userPrompt || "").trim(),
-    quotedText ? `Authoritative quoted source context:\n${quotedText}` : "No quoted source context was provided. Use only the user's visual request.",
+    userRequest,
+    `Authoritative quoted source context:\n${quotedText}`,
     "Generate the image now."
   ].filter(Boolean).join("\n\n");
 }
