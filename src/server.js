@@ -1547,15 +1547,13 @@ function removeStandaloneDirective(text = "", directive = "") {
 
 function parseMemoryDirectives(text = "") {
   const raw = String(text || "");
-  const sync = raw.includes("同步记忆库");
-  const recall = raw.includes("调取记忆库");
-  const search = removeStandaloneDirective(raw, "搜索");
+  const sync = removeStandaloneDirective(raw, "同步记忆库");
+  const recall = removeStandaloneDirective(sync.cleaned, "调取记忆库");
+  const search = removeStandaloneDirective(recall.cleaned, "搜索");
   const cleaned = search.cleaned
-    .replaceAll("同步记忆库", "")
-    .replaceAll("调取记忆库", "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return { sync, recall, webSearch: search.found, cleaned };
+  return { sync: sync.found, recall: recall.found, webSearch: search.found, cleaned };
 }
 
 function isDeepResearch(text = "") {
